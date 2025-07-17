@@ -16,9 +16,11 @@ from src.core.logger import get_logger
 from src.core.data_schema import PatientData, SuperbillDocument, ExtractionResults
 from src.processors.document_processor import DocumentProcessor
 from src.processors.ocr_engine import OCREngine
-from src.extractors.field_detector import FieldDetector
+from src.extractors.field_detector import FieldDetector, DetectionResult
 from src.extractors.nuextract_engine import NuExtractEngine
 from src.extractors.multi_patient_handler import MultiPatientHandler
+from src.validators.date_validator import DateValidator
+from src.validators.data_validator import DataValidator
 
 
 class ExtractionPipeline:
@@ -40,11 +42,16 @@ class ExtractionPipeline:
         self.field_detector = FieldDetector(config)
         self.nuextract_engine = NuExtractEngine(config)
         self.multi_patient_handler = MultiPatientHandler(config)
+        self.date_validator = DateValidator(config)
+        self.data_validator = DataValidator(config)
         
         # Configuration
         self.extraction_config = config.get("extraction", {})
         self.max_retries = self.extraction_config.get("max_retries", 3)
         self.confidence_threshold = self.extraction_config.get("confidence_threshold", 0.7)
+        
+        # Track model loading status
+        self._models_loaded = False
         
     async def extract_from_file(self, file_path: str) -> ExtractionResults:
         """
@@ -59,6 +66,9 @@ class ExtractionPipeline:
         self.logger.info(f"Starting extraction from file: {file_path}")
         
         try:
+            # Ensure models are loaded
+            await self._ensure_models_loaded()
+            
             # Step 1: Process document
             images = await self.document_processor.process_document(file_path)
             
@@ -113,6 +123,9 @@ class ExtractionPipeline:
         self.logger.info(f"Starting extraction from text: {source_name}")
         
         try:
+            # Ensure models are loaded
+            await self._ensure_models_loaded()
+            
             # Extract structured data
             patients = await self._extract_patient_data(text)
             
@@ -157,6 +170,9 @@ class ExtractionPipeline:
                     field_results = self.field_detector.detect_all_fields(segment_text)
                     enhanced_data = self._enhance_with_field_detection(nuextract_data, field_results)
                     
+                    # Validate and standardize dates
+                    enhanced_data = self._validate_patient_dates(enhanced_data)
+                    
                     # Set patient index
                     enhanced_data.patient_index = patient_index
                     
@@ -164,7 +180,13 @@ class ExtractionPipeline:
                 
                 # Method 2: Fallback to field detection only
                 self.logger.warning(f"NuExtract failed for patient {patient_index}, using field detection")
-                return self._create_patient_from_fields(segment_text, patient_index)
+                patient_data = self._create_patient_from_fields(segment_text, patient_index)
+                
+                # Validate and standardize dates if patient data was created
+                if patient_data:
+                    patient_data = self._validate_patient_dates(patient_data)
+                
+                return patient_data
                 
             except Exception as e:
                 self.logger.error(f"Failed to extract patient {patient_index}: {e}")
@@ -210,8 +232,48 @@ class ExtractionPipeline:
         if not patient_data.date_of_birth and 'dates' in field_results:
             dates = field_results['dates']
             if dates:
-                # Assume first date might be DOB (this is heuristic)
-                patient_data.date_of_birth = dates[0]
+                # Process all detected dates
+                standardized_dates = []
+                date_types = {}
+                
+                # Standardize all dates found
+                for date_obj in dates:
+                    if isinstance(date_obj, dict) and 'value' in date_obj:
+                        date_str = date_obj['value']
+                        std_date = self.date_validator.standardize_date(date_str)
+                        if std_date:
+                            standardized_dates.append(std_date)
+                            
+                            # Check context to determine date type
+                            if 'context' in date_obj:
+                                context = date_obj['context'].lower()
+                                
+                                # Identify date type based on context
+                                if any(term in context for term in ["birth", "dob", "born"]):
+                                    date_types[std_date] = "date_of_birth"
+                                elif any(term in context for term in ["service", "visit", "appointment", "exam"]):
+                                    date_types[std_date] = "date_of_service"
+                                elif any(term in context for term in ["claim", "submission", "filed"]):
+                                    date_types[std_date] = "claim_date"
+                    elif isinstance(date_obj, str):
+                        std_date = self.date_validator.standardize_date(date_obj)
+                        if std_date:
+                            standardized_dates.append(std_date)
+                
+                # Assign dates based on identified types
+                for std_date, date_type in date_types.items():
+                    if date_type == "date_of_birth" and not patient_data.date_of_birth:
+                        patient_data.date_of_birth = std_date
+                    elif date_type == "date_of_service" and not patient_data.date_of_service:
+                        patient_data.date_of_service = std_date
+                    elif date_type == "claim_date" and hasattr(patient_data, 'claim_info') and patient_data.claim_info:
+                        if not patient_data.claim_info.claim_date:
+                            patient_data.claim_info.claim_date = std_date
+                
+                # If we couldn't determine specific date types but have dates, make best guess
+                if not patient_data.date_of_birth and standardized_dates:
+                    # Assume first date might be DOB (this is heuristic)
+                    patient_data.date_of_birth = standardized_dates[0]
         
         # Enhance financial data
         if 'amounts' in field_results and field_results['amounts']:
@@ -226,6 +288,72 @@ class ExtractionPipeline:
         # Enhance PHI detection confidence
         if 'phi_detected' in field_results:
             patient_data.phi_detected = field_results['phi_detected']
+        
+        return patient_data
+    
+    def _validate_patient_dates(self, patient_data: PatientData) -> PatientData:
+        """
+        Validate and standardize dates within patient data.
+        
+        Args:
+            patient_data: Patient data to validate
+            
+        Returns:
+            Patient data with validated and standardized dates
+        """
+        # Collect all dates from patient data
+        dates = {}
+        
+        # Extract dates from patient data fields
+        if patient_data.date_of_birth:
+            dates["date_of_birth"] = patient_data.date_of_birth
+            
+        if patient_data.date_of_service:
+            dates["date_of_service"] = patient_data.date_of_service
+            
+        if hasattr(patient_data, 'service_info') and patient_data.service_info and hasattr(patient_data.service_info, 'service_date') and patient_data.service_info.service_date:
+            dates["service_date"] = patient_data.service_info.service_date
+            
+        if hasattr(patient_data, 'claim_info') and patient_data.claim_info:
+            if hasattr(patient_data.claim_info, 'claim_date') and patient_data.claim_info.claim_date:
+                dates["claim_date"] = patient_data.claim_info.claim_date
+            if hasattr(patient_data.claim_info, 'submission_date') and patient_data.claim_info.submission_date:
+                dates["submission_date"] = patient_data.claim_info.submission_date
+                
+        # Skip validation if no dates are present
+        if not dates:
+            return patient_data
+            
+        # Standardize all dates
+        standardized_dates = {}
+        for field, date_str in dates.items():
+            std_date = self.date_validator.standardize_date(date_str)
+            if std_date:
+                standardized_dates[field] = std_date
+                
+                # Update the patient data with standardized dates
+                if field == "date_of_birth":
+                    patient_data.date_of_birth = std_date
+                elif field == "date_of_service":
+                    patient_data.date_of_service = std_date
+                elif field == "service_date" and hasattr(patient_data, 'service_info') and patient_data.service_info:
+                    patient_data.service_info.service_date = std_date
+                elif field == "claim_date" and hasattr(patient_data, 'claim_info') and patient_data.claim_info:
+                    patient_data.claim_info.claim_date = std_date
+                elif field == "submission_date" and hasattr(patient_data, 'claim_info') and patient_data.claim_info:
+                    patient_data.claim_info.submission_date = std_date
+        
+        # Validate date consistency
+        if len(standardized_dates) > 1:
+            validity = self.date_validator.validate_date_consistency(standardized_dates)
+            
+            # Log any inconsistencies
+            for field, is_valid in validity.items():
+                if not is_valid:
+                    self.logger.warning(
+                        f"Date inconsistency detected in {field}: {dates.get(field)} "
+                        f"(standardized: {standardized_dates.get(field)})"
+                    )
         
         return patient_data
     
@@ -286,13 +414,49 @@ class ExtractionPipeline:
             if has_dates:
                 dates = field_results['dates']
                 if dates:
-                    # First date might be DOB or service date
-                    patient_data.date_of_birth = dates[0]
+                    # Process detected dates and contexts
+                    date_values = []
+                    date_types = {}
                     
-                    if len(dates) > 1:
-                        patient_data.service_info = ServiceInfo(
-                            date_of_service=dates[1]
-                        )
+                    for date_obj in dates:
+                        # Extract date value and context for analysis
+                        if isinstance(date_obj, DetectionResult):
+                            date_str = date_obj.value
+                            context = date_obj.context.lower() if date_obj.context else ""
+                            
+                            # Standardize the date
+                            std_date = self.date_validator.standardize_date(date_str)
+                            if std_date:
+                                date_values.append(std_date)
+                                
+                                # Identify date type based on context
+                                if any(term in context for term in ["birth", "dob", "born"]):
+                                    date_types[std_date] = "date_of_birth"
+                                elif any(term in context for term in ["service", "visit", "appointment", "exam"]):
+                                    date_types[std_date] = "date_of_service"
+                        elif isinstance(date_obj, str):
+                            # Handle string dates for backward compatibility
+                            std_date = self.date_validator.standardize_date(date_obj)
+                            if std_date:
+                                date_values.append(std_date)
+                    
+                    # Assign dates based on identified types
+                    for std_date, date_type in date_types.items():
+                        if date_type == "date_of_birth":
+                            patient_data.date_of_birth = std_date
+                        elif date_type == "date_of_service":
+                            if not patient_data.service_info:
+                                patient_data.service_info = ServiceInfo()
+                            patient_data.service_info.date_of_service = std_date
+                    
+                    # If we couldn't determine specific date types but have dates, make best guess
+                    if date_values and not patient_data.date_of_birth:
+                        patient_data.date_of_birth = date_values[0]
+                        
+                        if len(date_values) > 1 and not (patient_data.service_info and patient_data.service_info.date_of_service):
+                            patient_data.service_info = ServiceInfo(
+                                date_of_service=date_values[1]
+                            )
             
             # Set financial information
             if 'amounts' in field_results and field_results['amounts']:
@@ -324,6 +488,27 @@ class ExtractionPipeline:
         
         return sum(confidences) / len(confidences)
     
+    async def _ensure_models_loaded(self) -> None:
+        """Ensure all required models are loaded before extraction."""
+        if self._models_loaded:
+            return
+        
+        try:
+            self.logger.info("Loading required models...")
+            
+            # Load OCR model
+            await self.ocr_engine.load_models()
+            
+            # Load NuExtract model
+            await self.nuextract_engine.load_model()
+            
+            self._models_loaded = True
+            self.logger.info("All models loaded successfully")
+            
+        except Exception as e:
+            self.logger.error(f"Failed to load models: {e}")
+            raise RuntimeError(f"Failed to load required models: {e}")
+    
     async def batch_extract(self, file_paths: List[str]) -> List[ExtractionResults]:
         """
         Extract data from multiple files in batch.
@@ -335,6 +520,9 @@ class ExtractionPipeline:
             List of extraction results
         """
         self.logger.info(f"Starting batch extraction for {len(file_paths)} files")
+        
+        # Ensure models are loaded before batch processing
+        await self._ensure_models_loaded()
         
         results = []
         

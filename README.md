@@ -11,6 +11,7 @@ A comprehensive Python project for extracting structured data from medical super
 - **Flexible Export**: CSV and JSON output formats
 - **Medical Code Validation**: CPT and ICD-10 code verification
 - **High Performance**: GPU acceleration and batch processing
+- **Modern UI**: Intuitive web interface built with Streamlit
 
 ## Quick Start
 
@@ -36,7 +37,27 @@ python main.py *.pdf --output-dir ./results/ --format csv
 
 # Enable PHI anonymization
 python main.py input.pdf --anonymize-phi --output results.json
+
+# Launch the web UI
+python run_ui.py
 ```
+
+### Using the Web UI
+
+The web UI provides an intuitive interface for all extraction features:
+
+```bash
+# Start the web interface
+python run_ui.py
+```
+
+This will open a browser window with the Medical Superbill Extractor UI, where you can:
+
+- Upload and process individual files
+- Batch process multiple documents
+- Configure extraction parameters
+- Export results in various formats
+- Validate extraction results
 
 ## Project Structure
 

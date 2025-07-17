@@ -1,0 +1,416 @@
+/* Main Styles for Medical Superbill Extractor UI */
+
+/* Global styles and variables */
+:root {
+  --primary-color: #6236FF;
+  --primary-light: #8A6BFF;
+  --primary-dark: #4A1ECC;
+  --secondary-color: #36CAFF;
+  --secondary-light: #7DE0FF;
+  --secondary-dark: #1E9FCC;
+  --accent-color: #FF5757;
+  --success-color: #28a745;
+  --warning-color: #ffc107;
+  --danger-color: #dc3545;
+  --light-color: #f8f9fa;
+  --dark-color: #343a40;
+  --text-color: #333333;
+  --text-light: #6c757d;
+  --bg-color: #ffffff;
+  --border-radius: 10px;
+  --box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+  --transition: all 0.3s ease;
+}
+
+/* Background overlay with gradient */
+.bg-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  background: linear-gradient(135deg, rgba(98, 54, 255, 0.03) 0%, rgba(54, 202, 255, 0.03) 100%);
+  z-index: -1;
+  pointer-events: none;
+}
+
+/* Header styling */
+.header-container {
+  text-align: center;
+  margin-bottom: 2rem;
+  padding: 1rem;
+  background: linear-gradient(135deg, var(--primary-color) 0%, var(--secondary-color) 100%);
+  border-radius: var(--border-radius);
+  box-shadow: var(--box-shadow);
+  color: white;
+}
+
+.main-title {
+  font-size: 2.5rem;
+  font-weight: 700;
+  margin-bottom: 0.5rem;
+  background: linear-gradient(to right, #ffffff, #f0f0f0);
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+  text-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+}
+
+.subtitle {
+  font-size: 1.2rem;
+  opacity: 0.9;
+}
+
+/* Card styling */
+.card {
+  background-color: white;
+  border-radius: var(--border-radius);
+  box-shadow: var(--box-shadow);
+  padding: 1.5rem;
+  margin-bottom: 1.5rem;
+  transition: var(--transition);
+}
+
+.card:hover {
+  box-shadow: 0 8px 15px rgba(0, 0, 0, 0.1);
+  transform: translateY(-3px);
+}
+
+.card-header {
+  font-size: 1.25rem;
+  font-weight: 600;
+  margin-bottom: 1rem;
+  padding-bottom: 0.75rem;
+  border-bottom: 1px solid #eee;
+  color: var(--primary-color);
+}
+
+/* Info container */
+.info-container {
+  display: flex;
+  background: linear-gradient(to right, rgba(255, 255, 255, 0.9), rgba(240, 240, 240, 0.9));
+  border-radius: var(--border-radius);
+  padding: 1.5rem;
+  margin-bottom: 1.5rem;
+  box-shadow: var(--box-shadow);
+  align-items: center;
+}
+
+.info-icon {
+  font-size: 2rem;
+  margin-right: 1rem;
+}
+
+.info-content h3 {
+  font-size: 1.25rem;
+  margin-bottom: 0.5rem;
+  color: var(--primary-dark);
+}
+
+.info-content p {
+  color: var(--text-light);
+  margin: 0;
+}
+
+/* Feature grid */
+.features-container {
+  background: linear-gradient(to right, rgba(255, 255, 255, 0.8), rgba(240, 240, 240, 0.8));
+  border-radius: var(--border-radius);
+  padding: 1.5rem;
+  margin-top: 2rem;
+}
+
+.features-container h3 {
+  font-size: 1.5rem;
+  margin-bottom: 1rem;
+  color: var(--primary-dark);
+  text-align: center;
+}
+
+.feature-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 1rem;
+}
+
+.feature-card {
+  background-color: white;
+  border-radius: var(--border-radius);
+  padding: 1.25rem;
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.05);
+  transition: var(--transition);
+  text-align: center;
+  border-left: 4px solid var(--primary-color);
+}
+
+.feature-card:nth-child(2n) {
+  border-left: 4px solid var(--secondary-color);
+}
+
+.feature-card:hover {
+  transform: translateY(-3px);
+  box-shadow: 0 6px 12px rgba(0, 0, 0, 0.1);
+}
+
+.feature-icon {
+  font-size: 2rem;
+  margin-bottom: 0.75rem;
+}
+
+.feature-title {
+  font-weight: 600;
+  font-size: 1.1rem;
+  margin-bottom: 0.5rem;
+  color: var(--primary-color);
+}
+
+.feature-desc {
+  color: var(--text-light);
+  font-size: 0.9rem;
+}
+
+/* Results display */
+.results-container {
+  background: white;
+  border-radius: var(--border-radius);
+  padding: 1.5rem;
+  box-shadow: var(--box-shadow);
+}
+
+.result-section {
+  margin-bottom: 1.5rem;
+}
+
+.result-section-title {
+  font-size: 1.2rem;
+  font-weight: 600;
+  margin-bottom: 1rem;
+  color: var(--primary-color);
+  display: flex;
+  align-items: center;
+}
+
+.result-section-title::before {
+  content: "";
+  display: inline-block;
+  width: 12px;
+  height: 12px;
+  background-color: var(--primary-light);
+  border-radius: 50%;
+  margin-right: 8px;
+}
+
+/* Tables */
+.styled-table {
+  width: 100%;
+  border-collapse: separate;
+  border-spacing: 0;
+  margin-bottom: 1rem;
+}
+
+.styled-table th {
+  background-color: var(--primary-light);
+  color: white;
+  padding: 0.75rem;
+  text-align: left;
+  font-weight: 600;
+}
+
+.styled-table th:first-child {
+  border-top-left-radius: 8px;
+}
+
+.styled-table th:last-child {
+  border-top-right-radius: 8px;
+}
+
+.styled-table td {
+  padding: 0.75rem;
+  border-bottom: 1px solid #eee;
+}
+
+.styled-table tr:last-child td {
+  border-bottom: none;
+}
+
+.styled-table tr:hover td {
+  background-color: rgba(98, 54, 255, 0.05);
+}
+
+/* Badges */
+.badge {
+  display: inline-block;
+  padding: 0.25rem 0.5rem;
+  border-radius: 20px;
+  font-size: 0.75rem;
+  font-weight: 600;
+  text-transform: uppercase;
+}
+
+.badge-primary {
+  background-color: var(--primary-light);
+  color: white;
+}
+
+.badge-secondary {
+  background-color: var(--secondary-light);
+  color: white;
+}
+
+.badge-success {
+  background-color: var(--success-color);
+  color: white;
+}
+
+.badge-warning {
+  background-color: var(--warning-color);
+  color: #212529;
+}
+
+.badge-danger {
+  background-color: var(--danger-color);
+  color: white;
+}
+
+/* File uploader */
+.uploader-container {
+  background: linear-gradient(to right, rgba(255, 255, 255, 0.95), rgba(245, 245, 255, 0.95));
+  border-radius: var(--border-radius);
+  padding: 2rem;
+  border: 2px dashed var(--primary-light);
+  text-align: center;
+  transition: var(--transition);
+}
+
+.uploader-container:hover {
+  border-color: var(--primary-color);
+  background: linear-gradient(to right, rgba(255, 255, 255, 0.98), rgba(245, 245, 255, 0.98));
+}
+
+.upload-icon {
+  font-size: 3rem;
+  color: var(--primary-color);
+  margin-bottom: 1rem;
+}
+
+/* Documentation styling */
+.documentation-container {
+  background: white;
+  border-radius: var(--border-radius);
+  padding: 2rem;
+  box-shadow: var(--box-shadow);
+}
+
+.documentation-container h2 {
+  color: var(--primary-color);
+  margin-bottom: 1.5rem;
+  font-size: 1.75rem;
+}
+
+.documentation-container h3 {
+  color: var(--primary-dark);
+  margin: 1.5rem 0 1rem 0;
+  font-size: 1.3rem;
+}
+
+.documentation-container ul,
+.documentation-container ol {
+  padding-left: 1.5rem;
+  margin-bottom: 1.5rem;
+}
+
+.documentation-container li {
+  margin-bottom: 0.5rem;
+}
+
+/* Sidebar styling */
+.sidebar-header {
+  background: linear-gradient(135deg, var(--primary-color) 0%, var(--primary-dark) 100%);
+  color: white;
+  padding: 1.5rem;
+  border-radius: var(--border-radius);
+  margin-bottom: 1.5rem;
+  text-align: center;
+}
+
+.sidebar-logo {
+  width: 80px;
+  height: 80px;
+  margin: 0 auto 1rem auto;
+  background-color: white;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 2.5rem;
+}
+
+/* Buttons */
+.btn-gradient {
+  background: linear-gradient(135deg, var(--primary-color) 0%, var(--primary-dark) 100%);
+  color: white;
+  border: none;
+  border-radius: 30px;
+  padding: 0.5rem 1.5rem;
+  font-weight: 600;
+  transition: var(--transition);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+}
+
+.btn-gradient:hover {
+  background: linear-gradient(135deg, var(--primary-light) 0%, var(--primary-color) 100%);
+  transform: translateY(-2px);
+  box-shadow: 0 6px 8px rgba(0, 0, 0, 0.15);
+}
+
+/* Adjustments for Streamlit components */
+div.stButton > button {
+  border-radius: 30px;
+  font-weight: 600;
+  transition: var(--transition);
+  box-shadow: var(--box-shadow);
+}
+
+div.stButton > button:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 6px 8px rgba(0, 0, 0, 0.15);
+}
+
+/* Custom radio buttons/checkboxes */
+div.stRadio > div {
+  background-color: white;
+  border-radius: var(--border-radius);
+  padding: 0.5rem;
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.05);
+}
+
+/* Progress bar */
+div.stProgress > div > div {
+  background-color: var(--primary-color);
+}
+
+/* Animation for loading states */
+@keyframes pulse {
+  0% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.5;
+  }
+  100% {
+    opacity: 1;
+  }
+}
+
+.loading-pulse {
+  animation: pulse 1.5s infinite;
+}
+
+/* Responsive adjustments */
+@media (max-width: 768px) {
+  .feature-grid {
+    grid-template-columns: 1fr;
+  }
+}

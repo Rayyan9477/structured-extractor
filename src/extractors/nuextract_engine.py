@@ -254,7 +254,8 @@ class NuExtractEngine:
         self, 
         text: str, 
         template_name: str = "medical_superbill",
-        custom_schema: Optional[Dict[str, Any]] = None
+        custom_schema: Optional[Dict[str, Any]] = None,
+        max_retries: int = 3
     ) -> Dict[str, Any]:
         """
         Extract structured data from text using specified template.
@@ -263,6 +264,7 @@ class NuExtractEngine:
             text: Input text to extract from
             template_name: Name of extraction template to use
             custom_schema: Custom schema to override template
+            max_retries: Maximum number of retries on failure
             
         Returns:
             Extracted structured data
@@ -272,30 +274,40 @@ class NuExtractEngine:
         
         self.logger.debug(f"Extracting structured data using template: {template_name}")
         
-        try:
-            # Get template
-            template = self.templates.get(template_name)
-            if template is None and custom_schema is None:
-                raise ValueError(f"Unknown template: {template_name}")
-            
-            # Use custom schema if provided
-            schema = custom_schema if custom_schema else template.schema
-            
-            # Create extraction prompt
-            prompt = self._create_extraction_prompt(text, schema, template)
-            
-            # Generate structured output
-            result = await self._generate_extraction(prompt)
-            
-            # Parse and validate result
-            parsed_result = self._parse_extraction_result(result, schema)
-            
-            self.logger.debug("Structured data extraction completed")
-            return parsed_result
-            
-        except Exception as e:
-            self.logger.error(f"Structured data extraction failed: {e}")
-            return {}
+        retries = 0
+        while retries <= max_retries:
+            try:
+                # Get template
+                template = self.templates.get(template_name)
+                if template is None and custom_schema is None:
+                    raise ValueError(f"Unknown template: {template_name}")
+                
+                # Use custom schema if provided
+                schema = custom_schema if custom_schema else template.schema
+                
+                # Create extraction prompt
+                prompt = self._create_extraction_prompt(text, schema, template)
+                
+                # Generate structured output
+                result = await self._generate_extraction(prompt)
+                
+                # Parse and validate result
+                parsed_result = self._parse_extraction_result(result, schema)
+                
+                if not parsed_result:
+                    raise ValueError("Failed to parse extraction result")
+                
+                self.logger.debug("Structured data extraction completed successfully")
+                return parsed_result
+                
+            except Exception as e:
+                retries += 1
+                if retries > max_retries:
+                    self.logger.error(f"Structured data extraction failed after {max_retries} retries: {e}")
+                    return {}
+                
+                self.logger.warning(f"Extraction attempt {retries} failed: {e}. Retrying...")
+                await asyncio.sleep(1)  # Wait before retry
     
     def _create_extraction_prompt(
         self, 
@@ -402,15 +414,24 @@ Extracted JSON:"""
     
     def _fix_json_issues(self, json_text: str) -> str:
         """Try to fix common JSON formatting issues."""
+        if not json_text:
+            return "{}"
+            
         # Remove any text before the first {
         json_start = json_text.find('{')
         if json_start > 0:
             json_text = json_text[json_start:]
+        elif json_start < 0:
+            # No JSON object found
+            return "{}"
         
         # Remove any text after the last }
         json_end = json_text.rfind('}')
         if json_end >= 0:
             json_text = json_text[:json_end + 1]
+        else:
+            # No closing bracket
+            return "{}"
         
         # Fix common issues
         json_text = json_text.replace("'", '"')  # Single quotes to double quotes
@@ -418,7 +439,25 @@ Extracted JSON:"""
         json_text = json_text.replace('False', 'false')
         json_text = json_text.replace('None', 'null')
         
-        return json_text
+        # Fix trailing commas (common JSON parsing error)
+        json_text = re.sub(r',\s*}', '}', json_text)
+        json_text = re.sub(r',\s*]', ']', json_text)
+        
+        # Fix missing quotes around keys
+        json_text = re.sub(r'([{,])\s*([a-zA-Z0-9_]+)\s*:', r'\1"\2":', json_text)
+        
+        # Ensure consistent spacing
+        json_text = re.sub(r'"\s*:\s*"', '": "', json_text)
+        json_text = re.sub(r'"\s*:\s*\{', '": {', json_text)
+        json_text = re.sub(r'"\s*:\s*\[', '": [', json_text)
+        
+        # Try to parse and regenerate to fix subtle issues
+        try:
+            parsed = json.loads(json_text)
+            return json.dumps(parsed)
+        except json.JSONDecodeError:
+            self.logger.warning("Could not fully recover JSON, returning partially fixed version")
+            return json_text
     
     def _validate_extracted_data(self, data: Dict[str, Any], schema: Dict[str, Any]) -> Dict[str, Any]:
         """Validate extracted data against schema."""

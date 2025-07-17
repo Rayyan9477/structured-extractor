@@ -18,6 +18,7 @@ from src.core.data_schema import (
     CPTCode, ICD10Code, PHIItem, PHIType, 
     FieldConfidence, Address, ContactInfo
 )
+from src.validators.date_validator import DateValidator
 
 
 class FieldType(Enum):
@@ -64,6 +65,9 @@ class PatternDetector:
         # Load security configuration for PHI patterns
         self.security_config = config.get_security_config()
         self.phi_patterns = self.security_config.get("phi_patterns", {})
+        
+        # Initialize DateValidator for robust date handling
+        self.date_validator = DateValidator(config)
     
     def detect_fields(self, text: str) -> List[DetectionResult]:
         """
@@ -140,10 +144,18 @@ class PatternDetector:
         return results
     
     def detect_dates(self, text: str) -> List[DetectionResult]:
-        """Detect dates in various formats."""
+        """
+        Detect dates in various formats.
+        
+        Uses enhanced DateValidator for more accurate date detection,
+        validation, and standardization.
+        """
         results = []
         
-        # Common date patterns
+        # Use DateValidator's pattern detection for comprehensive detection
+        extracted_dates = self.date_validator.extract_date_from_text(text)
+        
+        # Common date patterns for position detection
         date_patterns = [
             r"\b\d{1,2}[/-]\d{1,2}[/-]\d{2,4}\b",  # MM/DD/YYYY, MM-DD-YYYY
             r"\b\d{1,2}[/-]\d{1,2}[/-]\d{2}\b",    # MM/DD/YY, MM-DD-YY
@@ -152,23 +164,72 @@ class PatternDetector:
             r"\b\d{1,2}\s+[A-Za-z]{3,9}\s+\d{4}\b",    # DD Month YYYY
         ]
         
+        # Process all detected date formats
+        processed_positions = set()
+        
+        # First, use the DateValidator's standardized results
+        for std_date in extracted_dates:
+            # Find where this date appears in original text by matching patterns
+            for pattern in date_patterns:
+                for match in re.finditer(pattern, text):
+                    position = (match.start(), match.end())
+                    
+                    # Skip already processed positions
+                    if position in processed_positions:
+                        continue
+                    
+                    date_str = match.group()
+                    standardized = self.date_validator.standardize_date(date_str)
+                    
+                    # Only process if standardization is successful
+                    if standardized:
+                        confidence = self._calculate_date_confidence(date_str, text, match.start())
+                        
+                        results.append(DetectionResult(
+                            field_type=FieldType.DATE,
+                            value=standardized,
+                            confidence=confidence,
+                            position=position,
+                            context=self._get_context(text, match.start(), match.end()),
+                            metadata={
+                                "original_format": date_str,
+                                "standardized": True,
+                                "validated": True
+                            }
+                        ))
+                        
+                        processed_positions.add(position)
+        
+        # Fallback for any undetected dates using the original regex approach
         for pattern in date_patterns:
             for match in re.finditer(pattern, text):
+                position = (match.start(), match.end())
+                
+                # Skip already processed positions
+                if position in processed_positions:
+                    continue
+                
                 date_str = match.group()
                 
-                # Try to parse the date
-                parsed_date = self._parse_date(date_str)
-                if parsed_date:
+                # Try to standardize the date
+                standardized = self.date_validator.standardize_date(date_str)
+                if standardized:
                     confidence = self._calculate_date_confidence(date_str, text, match.start())
                     
                     results.append(DetectionResult(
                         field_type=FieldType.DATE,
-                        value=parsed_date.isoformat(),
+                        value=standardized,
                         confidence=confidence,
-                        position=(match.start(), match.end()),
+                        position=position,
                         context=self._get_context(text, match.start(), match.end()),
-                        metadata={"original_format": date_str}
+                        metadata={
+                            "original_format": date_str,
+                            "standardized": True,
+                            "validated": True
+                        }
                     ))
+                    
+                    processed_positions.add(position)
         
         return results
     
@@ -316,19 +377,43 @@ class PatternDetector:
         return luhn_check(full_npi)
     
     def _parse_date(self, date_str: str) -> Optional[date]:
-        """Parse date string using dateparser."""
+        """
+        Parse date string using DateValidator.
+        
+        This method is maintained for backward compatibility.
+        Uses the enhanced DateValidator for more robust date parsing.
+        
+        Args:
+            date_str: Date string to parse
+            
+        Returns:
+            Parsed date object or None if invalid
+        """
         try:
-            parsed = dateparser.parse(
-                date_str,
-                settings={
-                    'STRICT_PARSING': False,
-                    'DATE_ORDER': 'MDY',  # US date format preference
-                    'RETURN_AS_TIMEZONE_AWARE': False
-                }
-            )
-            return parsed.date() if parsed else None
-        except Exception:
-            return None
+            # Use the DateValidator for standardization
+            standardized = self.date_validator.standardize_date(date_str)
+            if not standardized:
+                return None
+                
+            # Convert to date object
+            year, month, day = map(int, standardized.split('-'))
+            return date(year, month, day)
+        except Exception as e:
+            self.logger.debug(f"Error parsing date '{date_str}': {e}")
+            
+            # Fallback to original method
+            try:
+                parsed = dateparser.parse(
+                    date_str,
+                    settings={
+                        'STRICT_PARSING': False,
+                        'DATE_ORDER': 'MDY',  # US date format preference
+                        'RETURN_AS_TIMEZONE_AWARE': False
+                    }
+                )
+                return parsed.date() if parsed else None
+            except Exception:
+                return None
     
     def _calculate_cpt_confidence(self, code: str, text: str, position: int) -> float:
         """Calculate confidence score for CPT code detection."""
@@ -374,22 +459,61 @@ class PatternDetector:
         return min(base_confidence, 1.0)
     
     def _calculate_date_confidence(self, date_str: str, text: str, position: int) -> float:
-        """Calculate confidence score for date detection."""
+        """
+        Calculate confidence score for date detection.
+        
+        Enhanced with more context awareness and validation checks.
+        
+        Args:
+            date_str: Detected date string
+            text: Source text
+            position: Start position of date in text
+            
+        Returns:
+            Confidence score between 0.0 and 1.0
+        """
         base_confidence = 0.7
         
         # Check context for date-related terms
         context = self._get_context(text, position, position + len(date_str), window=30)
         date_keywords = [
             "date", "service", "visit", "admission", "discharge",
-            "birth", "dob", "seen", "treated", "exam"
+            "birth", "dob", "seen", "treated", "exam", "appointment",
+            "schedule", "due", "issued", "effective", "onset", "start",
+            "end", "through", "procedure", "surgery", "assessment"
         ]
         
+        # Context-based confidence boost
         if any(keyword in context.lower() for keyword in date_keywords):
             base_confidence += 0.2
+            
+        # Check if date is preceded by a field label
+        prefix_context = text[max(0, position-20):position].lower()
+        date_labels = [
+            "dob:", "date of birth:", "dos:", "date of service:", 
+            "admission:", "discharge:", "date:", "seen on:", "as of:"
+        ]
+        
+        if any(label in prefix_context for label in date_labels):
+            base_confidence += 0.15
         
         # Higher confidence for standard formats
         if re.match(r"\d{1,2}/\d{1,2}/\d{4}", date_str):
             base_confidence += 0.1
+        elif re.match(r"\d{4}-\d{1,2}-\d{1,2}", date_str):
+            base_confidence += 0.1
+        
+        # Check date validity using DateValidator
+        if self.date_validator.standardize_date(date_str):
+            base_confidence += 0.05
+        
+        # Reduce confidence for potential non-date numbers
+        if context.lower().count("$") > 0 or "amount" in context.lower():
+            base_confidence -= 0.1
+            
+        # Consider position in document - headers often contain dates
+        if position < len(text) * 0.2:  # Top 20% of document
+            base_confidence += 0.05
         
         return min(base_confidence, 1.0)
     
@@ -653,7 +777,7 @@ class FieldDetectionEngine:
         self.name_detector = NameDetector(config)
         self.address_detector = AddressDetector(config)
     
-    def detect_all_fields(self, text: str) -> Dict[FieldType, List[DetectionResult]]:
+    def detect_all_fields(self, text: str) -> Dict[str, Any]:
         """
         Detect all fields in the given text.
         
@@ -661,36 +785,63 @@ class FieldDetectionEngine:
             text: Input text to analyze
             
         Returns:
-            Dictionary of field types to detection results
+            Dictionary mapping field types to their values and metadata
         """
         self.logger.debug("Starting field detection")
         
         all_results = []
         
         # Run all detectors
-        all_results.extend(self.pattern_detector.detect_fields(text))
-        all_results.extend(self.name_detector.detect_names(text))
-        all_results.extend(self.address_detector.detect_addresses(text))
+        all_results.extend(self.detect_fields(text))
         
         # Group results by field type
         grouped_results = {}
         for result in all_results:
-            if result.field_type not in grouped_results:
-                grouped_results[result.field_type] = []
-            grouped_results[result.field_type].append(result)
+            field_type = result.field_type.value  # Use string value
+            if field_type not in grouped_results:
+                grouped_results[field_type] = []
+            grouped_results[field_type].append(result)
         
         # Sort results by confidence within each group
         for field_type in grouped_results:
             grouped_results[field_type].sort(key=lambda x: x.confidence, reverse=True)
         
+        # Prepare output format with only values for backward compatibility
+        final_results = {}
+        
+        # Process CPT codes
+        if 'cpt_code' in grouped_results:
+            final_results['cpt_codes'] = [r.value for r in grouped_results['cpt_code']]
+        
+        # Process ICD-10 codes
+        if 'icd10_code' in grouped_results:
+            final_results['icd10_codes'] = [r.value for r in grouped_results['icd10_code']]
+        
+        # Process dates - now include full result objects for context analysis
+        if 'date' in grouped_results:
+            final_results['dates'] = grouped_results['date']
+        
+        # Process monetary amounts
+        if 'money' in grouped_results:
+            final_results['amounts'] = [r.value for r in grouped_results['money']]
+        
+        # Process PHI detection
+        phi_types = ['ssn', 'phone', 'email', 'name']
+        phi_detected = any(phi_type in grouped_results for phi_type in phi_types)
+        final_results['phi_detected'] = phi_detected
+        
+        # Add NPI numbers if detected
+        if 'npi' in grouped_results:
+            final_results['npi_numbers'] = [r.value for r in grouped_results['npi']]
+        
         self.logger.debug(f"Field detection completed: {len(all_results)} fields found")
-        return grouped_results
+        return final_results
     
     def get_best_matches(
         self,
-        detection_results: Dict[FieldType, List[DetectionResult]],
+        detection_results: Dict[str, Any],
         max_per_type: int = 5
-    ) -> Dict[FieldType, List[DetectionResult]]:
+    ) -> Dict[str, Any]:
         """
         Get the best matches for each field type.
         
@@ -704,6 +855,14 @@ class FieldDetectionEngine:
         filtered_results = {}
         
         for field_type, results in detection_results.items():
+            if isinstance(results, list) and results and hasattr(results[0], 'confidence'):
+                # This is a list of DetectionResult objects
+                filtered_results[field_type] = results[:max_per_type]
+            else:
+                # This is already processed data (like arrays of values)
+                filtered_results[field_type] = results
+        
+        return filtered_results
             # Take top N results based on confidence
             filtered_results[field_type] = results[:max_per_type]
         
