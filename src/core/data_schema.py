@@ -11,6 +11,15 @@ from enum import Enum
 import re
 
 
+class OCRResult(BaseModel):
+    """Represents the output of an OCR engine for a single page or image."""
+    text: str
+    confidence: float
+    model_name: str
+    processing_time: Optional[float] = None
+    bounding_boxes: Optional[List[Dict[str, Any]]] = None
+
+
 class FieldConfidence(BaseModel):
     """Confidence scoring for extracted fields."""
     value: float = Field(..., ge=0.0, le=1.0, description="Confidence score between 0 and 1")
@@ -33,7 +42,7 @@ class PHIType(str, Enum):
 
 class CPTCode(BaseModel):
     """CPT (Current Procedural Terminology) code structure."""
-    code: str = Field(..., regex=r"^\d{5}$", description="5-digit CPT code")
+    code: str = Field(..., pattern=r"^\d{5}$", description="5-digit CPT code")
     description: Optional[str] = Field(None, description="Procedure description")
     modifier: Optional[str] = Field(None, description="CPT modifier codes")
     units: Optional[int] = Field(None, ge=1, description="Number of units performed")
@@ -149,6 +158,10 @@ class ServiceInfo(BaseModel):
     end_time: Optional[str] = None
     duration_minutes: Optional[int] = Field(None, ge=0)
     chief_complaint: Optional[str] = None
+    # Additional fields used by exporters / down-stream code
+    provider_name: Optional[str] = None
+    provider_npi: Optional[str] = None
+    facility_name: Optional[str] = None
     confidence: Optional[FieldConfidence] = None
 
 
@@ -159,6 +172,10 @@ class FinancialInfo(BaseModel):
     outstanding_balance: Optional[float] = Field(None, ge=0)
     copay: Optional[float] = Field(None, ge=0)
     deductible: Optional[float] = Field(None, ge=0)
+    # Additional fields referenced in exporters
+    insurance_payment: Optional[float] = Field(None, ge=0)
+    patient_payment: Optional[float] = Field(None, ge=0)
+    balance_due: Optional[float] = Field(None, ge=0)
     payment_method: Optional[str] = None
     confidence: Optional[FieldConfidence] = None
 
@@ -184,7 +201,9 @@ class PatientData(BaseModel):
     gender: Optional[str] = None
     address: Optional[Address] = None
     contact: Optional[ContactInfo] = None
-    
+    # Quick access fields extracted directly (flattened)
+    phone: Optional[str] = None
+ 
     # Insurance Information
     insurance: Optional[InsuranceInfo] = None
     
@@ -199,7 +218,7 @@ class PatientData(BaseModel):
     provider: Optional[ProviderInfo] = None
     
     # Financial Information
-    financial: Optional[FinancialInfo] = None
+    financial_info: Optional[FinancialInfo] = None
     
     # PHI Detection
     phi_detected: List[PHIItem] = Field(default_factory=list)
@@ -211,6 +230,8 @@ class PatientData(BaseModel):
     
     # Raw extracted text sections
     raw_text_sections: Dict[str, str] = Field(default_factory=dict)
+    # Index of patient in multi-patient documents (assigned during processing)
+    patient_index: Optional[int] = None
 
 
 class DocumentMetadata(BaseModel):
@@ -256,6 +277,17 @@ class ExtractionResult(BaseModel):
     # Export formats
     csv_data: Optional[List[Dict[str, Any]]] = None
     json_data: Optional[Dict[str, Any]] = None
+
+
+class ExtractionResults(BaseModel):
+    """Represents the complete results of an extraction process."""
+    success: bool
+    file_path: str
+    extraction_timestamp: datetime
+    total_patients: int
+    patients: List['PatientData'] = []
+    extraction_confidence: float = 0.0
+    metadata: Dict[str, Any] = {}
 
 
 # Validation patterns and constants

@@ -792,7 +792,9 @@ class FieldDetectionEngine:
         all_results = []
         
         # Run all detectors
-        all_results.extend(self.detect_fields(text))
+        all_results.extend(self.pattern_detector.detect_fields(text))
+        all_results.extend(self.name_detector.detect_names(text))
+        all_results.extend(self.address_detector.detect_addresses(text))
         
         # Group results by field type
         grouped_results = {}
@@ -861,9 +863,5 @@ class FieldDetectionEngine:
             else:
                 # This is already processed data (like arrays of values)
                 filtered_results[field_type] = results
-        
-        return filtered_results
-            # Take top N results based on confidence
-            filtered_results[field_type] = results[:max_per_type]
         
         return filtered_results

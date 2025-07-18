@@ -2,6 +2,7 @@
 torch>=2.0.0
 transformers>=4.30.0
 datasets>=2.12.0
+huggingface_hub>=0.16.4
 
 # Computer Vision and OCR
 opencv-python>=4.8.0
@@ -42,6 +43,10 @@ dateparser>=1.1.7
 # Async Support
 aiofiles>=23.1.0
 httpx>=0.24.1
+
+# System monitoring
+psutil>=5.9.0
+loguru>=0.7.2
 
 # Utilities
 regex>=2023.6.3

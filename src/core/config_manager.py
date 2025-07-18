@@ -48,6 +48,14 @@ class ConfigManager:
             logger.error(f"Error parsing configuration file: {e}")
             raise
     
+    def get_cache_dir(self) -> str:
+        """Get model cache directory."""
+        return self.get("global.cache_dir", "models_cache")
+
+    def get_logging_config(self) -> Dict[str, Any]:
+        """Get logging configuration."""
+        return self.get("logging", {"level": "INFO", "log_file": None})
+
     def get(self, key: str, default: Any = None) -> Any:
         """
         Get configuration value by key.

@@ -2,7 +2,7 @@
 Extraction modules for medical superbill data extraction.
 """
 
-from .field_detector import FieldDetector, FieldType, DetectionResult
+from .field_detector import FieldDetectionEngine, FieldType, DetectionResult
 from .nuextract_engine import NuExtractEngine
 from .multi_patient_handler import (
     MultiPatientHandler,
@@ -15,7 +15,7 @@ from .multi_patient_handler import (
 )
 
 __all__ = [
-    'FieldDetector',
+    'FieldDetectionEngine',
     'FieldType', 
     'DetectionResult',
     'NuExtractEngine',

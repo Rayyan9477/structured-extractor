@@ -13,10 +13,10 @@ from datetime import datetime
 
 from src.core.config_manager import ConfigManager
 from src.core.logger import get_logger
-from src.core.data_schema import PatientData, SuperbillDocument, ExtractionResults
+from src.core.data_schema import PatientData, SuperbillDocument, ExtractionResults, FieldConfidence
 from src.processors.document_processor import DocumentProcessor
 from src.processors.ocr_engine import OCREngine
-from src.extractors.field_detector import FieldDetector, DetectionResult
+from src.extractors.field_detector import FieldDetectionEngine, DetectionResult
 from src.extractors.nuextract_engine import NuExtractEngine
 from src.extractors.multi_patient_handler import MultiPatientHandler
 from src.validators.date_validator import DateValidator
@@ -39,7 +39,7 @@ class ExtractionPipeline:
         # Initialize components
         self.document_processor = DocumentProcessor(config)
         self.ocr_engine = OCREngine(config)
-        self.field_detector = FieldDetector(config)
+        self.field_detector = FieldDetectionEngine(config)
         self.nuextract_engine = NuExtractEngine(config)
         self.multi_patient_handler = MultiPatientHandler(config)
         self.date_validator = DateValidator(config)
@@ -53,6 +53,19 @@ class ExtractionPipeline:
         # Track model loading status
         self._models_loaded = False
         
+    async def _initialize_models(self):
+        """Initializes all required models."""
+        if self._models_loaded:
+            return
+        
+        self.logger.info("Initializing models...")
+        await asyncio.gather(
+            self.ocr_engine.load_models(),
+            self.nuextract_engine.load_model()
+        )
+        self._models_loaded = True
+        self.logger.info("All models initialized.")
+
     async def extract_from_file(self, file_path: str) -> ExtractionResults:
         """
         Extract structured data from a superbill file.
@@ -67,7 +80,7 @@ class ExtractionPipeline:
         
         try:
             # Ensure models are loaded
-            await self._ensure_models_loaded()
+            await self._initialize_models()
             
             # Step 1: Process document
             images = await self.document_processor.process_document(file_path)
@@ -75,21 +88,18 @@ class ExtractionPipeline:
             if not images:
                 raise ValueError(f"No images extracted from {file_path}")
             
-            # Step 2: OCR processing
-            ocr_results = []
-            for i, image in enumerate(images):
-                self.logger.debug(f"Processing page {i + 1}/{len(images)}")
-                page_text = await self.ocr_engine.extract_text(image)
-                ocr_results.append(page_text)
-            
-            # Combine all page texts
-            full_text = "\n\n--- PAGE BREAK ---\n\n".join(ocr_results)
+            # Step 2: OCR processing (batch for efficiency)
+            ocr_results = await self.ocr_engine.extract_text_batch(images)
+
+            # Combine all page texts into one string
+            full_text = "\n\n--- PAGE BREAK ---\n\n".join([r.text for r in ocr_results])
             
             # Step 3: Extract structured data
             patients = await self._extract_patient_data(full_text)
             
             # Step 4: Create results
             results = ExtractionResults(
+                success=True,
                 file_path=file_path,
                 extraction_timestamp=datetime.now(),
                 total_patients=len(patients),
@@ -124,13 +134,14 @@ class ExtractionPipeline:
         
         try:
             # Ensure models are loaded
-            await self._ensure_models_loaded()
+            await self._initialize_models()
             
             # Extract structured data
             patients = await self._extract_patient_data(text)
             
             # Create results
             results = ExtractionResults(
+                success=True,
                 file_path=source_name,
                 extraction_timestamp=datetime.now(),
                 total_patients=len(patients),
@@ -162,18 +173,19 @@ class ExtractionPipeline:
         async def extract_single_patient(segment_text: str, patient_index: int) -> Optional[PatientData]:
             """Extract data for a single patient segment."""
             try:
-                # Method 1: NuExtract structured extraction
-                nuextract_data = await self.nuextract_engine.extract_structured_data(segment_text)
+                # Method 1: NuExtract structured extraction directly to PatientData
+                nuextract_patient = await self.nuextract_engine.extract_patient_data(segment_text, patient_index)
                 
-                if nuextract_data:
+                if nuextract_patient:
                     # Enhance with field detection
                     field_results = self.field_detector.detect_all_fields(segment_text)
-                    enhanced_data = self._enhance_with_field_detection(nuextract_data, field_results)
+                    enhanced_data = self._enhance_with_field_detection(nuextract_patient, field_results)
                     
                     # Validate and standardize dates
                     enhanced_data = self._validate_patient_dates(enhanced_data)
                     
                     # Set patient index
+
                     enhanced_data.patient_index = patient_index
                     
                     return enhanced_data
@@ -380,7 +392,7 @@ class ExtractionPipeline:
             return None
         
         try:
-            from src.core.data_schema import CPTCode, ICD10Code, ServiceInfo, FinancialInfo
+            from src.core.data_schema import CPTCode, ICD10Code, ServiceInfo, FinancialInfo, FieldConfidence
             
             # Create basic patient data
             patient_data = PatientData(patient_index=patient_index)
@@ -399,14 +411,22 @@ class ExtractionPipeline:
             # Set CPT codes
             if has_cpt:
                 patient_data.cpt_codes = [
-                    CPTCode(code=code, description="", confidence=0.7)
+                    CPTCode(code=code, description="", confidence=FieldConfidence(
+                        value=0.7, 
+                        source="field_detector", 
+                        method="regex_pattern"
+                    ))
                     for code in field_results['cpt_codes']
                 ]
             
             # Set ICD-10 codes
             if 'icd10_codes' in field_results:
                 patient_data.icd10_codes = [
-                    ICD10Code(code=code, description="", confidence=0.7)
+                    ICD10Code(code=code, description="", confidence=FieldConfidence(
+                        value=0.7, 
+                        source="field_detector", 
+                        method="regex_pattern"
+                    ))
                     for code in field_results['icd10_codes']
                 ]
             
@@ -488,27 +508,6 @@ class ExtractionPipeline:
         
         return sum(confidences) / len(confidences)
     
-    async def _ensure_models_loaded(self) -> None:
-        """Ensure all required models are loaded before extraction."""
-        if self._models_loaded:
-            return
-        
-        try:
-            self.logger.info("Loading required models...")
-            
-            # Load OCR model
-            await self.ocr_engine.load_models()
-            
-            # Load NuExtract model
-            await self.nuextract_engine.load_model()
-            
-            self._models_loaded = True
-            self.logger.info("All models loaded successfully")
-            
-        except Exception as e:
-            self.logger.error(f"Failed to load models: {e}")
-            raise RuntimeError(f"Failed to load required models: {e}")
-    
     async def batch_extract(self, file_paths: List[str]) -> List[ExtractionResults]:
         """
         Extract data from multiple files in batch.
@@ -522,7 +521,7 @@ class ExtractionPipeline:
         self.logger.info(f"Starting batch extraction for {len(file_paths)} files")
         
         # Ensure models are loaded before batch processing
-        await self._ensure_models_loaded()
+        await self._initialize_models()
         
         results = []
         
@@ -555,14 +554,15 @@ class ExtractionEngine:
     structured data from medical superbills.
     """
     
-    def __init__(self, config_path: Optional[str] = None):
+    def __init__(self, config: Optional[ConfigManager] = None, config_path: Optional[str] = None):
         """
         Initialize extraction engine.
         
         Args:
-            config_path: Optional path to configuration file
+            config: Optional ConfigManager instance.
+            config_path: Optional path to configuration file.
         """
-        self.config = ConfigManager(config_path)
+        self.config = config or ConfigManager(config_path)
         self.logger = get_logger(__name__)
         self.pipeline = ExtractionPipeline(self.config)
         

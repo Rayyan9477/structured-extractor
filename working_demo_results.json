@@ -1,0 +1,39 @@
+{
+  "timestamp": 1752848847.7030647,
+  "models_available": [
+    "NuExtract",
+    "Nanonets-OCR"
+  ],
+  "ocr_text": "MEDICAL SUPERBILL\n        Patient Name: John Smith\n        Date of Birth: 01/15/1980\n        Patient ID: PAT001\n        Date of Service: 12/15/2024\n        Provider: Dr. Sarah Johnson, MD\n        \n        Services Provided:\n        99213 - Office Visit (Established Patient)\n        87430 - Strep Test\n        93000 - Electrocardiogram\n        \n        Diagnosis Codes:\n        J06.9 - Acute upper respiratory infection\n        I10 - Essential hypertension\n        \n        Charges:\n        Office Visit: $150.00\n        Strep Test: $25.00\n        ECG: $75.00\n        Total: $250.00",
+  "structured_data": {
+    "patient_name": "John Smith",
+    "date_of_birth": "01/15/1980",
+    "patient_id": "PAT001",
+    "date_of_service": "12/15/2024",
+    "provider": "Dr. Sarah Johnson, MD",
+    "cpt_codes": [
+      "99213",
+      "87430",
+      "93000"
+    ],
+    "icd10_codes": [
+      "J06.9",
+      "I10"
+    ],
+    "services": [
+      "99213 - Office Visit (Established Patient)",
+      "87430 - Strep Test",
+      "93000 - Electrocardiogram"
+    ],
+    "charges": {
+      "individual_charges": [
+        "Office Visit: $150.00",
+        "Strep Test: $25.00",
+        "ECG: $75.00",
+        "Total: $250.00"
+      ],
+      "total_amount": "$250.00"
+    }
+  },
+  "demo_type": "Pattern-based extraction (sample)"
+}

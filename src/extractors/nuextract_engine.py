@@ -1,17 +1,20 @@
 """
 NuExtract Integration for Medical Document Understanding
 
-Integrates numind/NuExtract-2.0-4B for structured information extraction from OCR text,
+Integrates numind/NuExtract-2.0-8B for structured information extraction from OCR text,
 with specialized templates for medical superbill formats.
 """
 
 import json
 import asyncio
 import torch
+import re
 from typing import Dict, Any, List, Optional, Union
 from dataclasses import dataclass
+from datetime import date
+from pathlib import Path
 
-from transformers import AutoTokenizer, AutoModelForCausalLM, GenerationConfig
+from transformers import AutoTokenizer, AutoModelForCausalLM, AutoModelForVision2Seq, GenerationConfig
 from src.core.config_manager import ConfigManager
 from src.core.logger import get_logger
 from src.core.data_schema import (
@@ -45,12 +48,13 @@ class NuExtractEngine:
         
         # Get model configuration
         self.model_config = config.get_model_config("extraction", "nuextract")
-        self.model_name = self.model_config.get("model_name", "numind/NuExtract-2.0-4B")
-        self.max_length = self.model_config.get("max_length", 2048)
+        self.model_name = "numind/NuExtract-2.0-8B"  # Using the 8B model
+        self.max_length = self.model_config.get("max_length", 4096)  # Increased for 8B model
         self.temperature = self.model_config.get("temperature", 0.1)
         self.top_p = self.model_config.get("top_p", 0.9)
         
         self.tokenizer = None
+        self.processor = None
         self.model = None
         self.device = self._get_device()
         
@@ -73,30 +77,40 @@ class NuExtractEngine:
         try:
             self.logger.info("Loading NuExtract model...")
             
-            # Load tokenizer
+            # Determine model path
+            model_path = Path("models_cache") / "numind_NuExtract-2.0-8B"
+            
+            if not model_path.exists():
+                self.logger.warning(f"Local model not found at {model_path}, using remote model")
+                model_path = self.model_name
+            
+            # Load tokenizer and processor for Qwen2.5-VL
+            from transformers import AutoTokenizer, AutoProcessor, Qwen2_5_VLForConditionalGeneration
+            
             self.tokenizer = AutoTokenizer.from_pretrained(
-                self.model_name,
+                str(model_path), 
+                trust_remote_code=True
+            )
+            
+            self.processor = AutoProcessor.from_pretrained(
+                str(model_path), 
                 trust_remote_code=True
             )
             
             # Load model
-            self.model = AutoModelForCausalLM.from_pretrained(
-                self.model_name,
-                trust_remote_code=True,
-                torch_dtype=torch.float16 if self.device == "cuda" else torch.float32,
-                device_map="auto" if self.device == "cuda" else None
+            self.model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
+                str(model_path),
+                torch_dtype=torch.float16 if torch.cuda.is_available() else torch.float32,
+                device_map="auto" if torch.cuda.is_available() else None,
+                trust_remote_code=True
             )
-            
-            if self.device != "cuda":
-                self.model = self.model.to(self.device)
-            
-            self.model.eval()
             
             # Set pad token if not present
             if self.tokenizer.pad_token is None:
                 self.tokenizer.pad_token = self.tokenizer.eos_token
             
-            self.logger.info("NuExtract model loaded successfully")
+            self.logger.info(f"NuExtract model loaded successfully")
+            self.logger.info(f"Model loaded on device: {self.device}")
             
         except Exception as e:
             self.logger.error(f"Failed to load NuExtract model: {e}")
@@ -344,18 +358,39 @@ Extracted JSON:"""
     async def _generate_extraction(self, prompt: str) -> str:
         """Generate extraction using the model."""
         try:
-            # Tokenize input
-            inputs = self.tokenizer(
-                prompt,
+            # Prepare messages for Qwen2.5-VL
+            messages = [
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": prompt
+                        }
+                    ],
+                }
+            ]
+            
+            # Apply chat template
+            text = self.processor.apply_chat_template(
+                messages, tokenize=False, add_generation_prompt=True
+            )
+            
+            # Process inputs (text-only for now)
+            inputs = self.processor(
+                text=[text],
+                images=None,
+                videos=None,
+                padding=True,
                 return_tensors="pt",
-                max_length=self.max_length,
-                truncation=True,
-                padding=True
-            ).to(self.device)
+            )
+            
+            # Move to device
+            inputs = inputs.to(self.model.device)
             
             # Generate
             with torch.no_grad():
-                outputs = self.model.generate(
+                generated_ids = self.model.generate(
                     **inputs,
                     max_new_tokens=1024,
                     temperature=self.temperature,
@@ -363,20 +398,22 @@ Extracted JSON:"""
                     do_sample=True,
                     pad_token_id=self.tokenizer.eos_token_id,
                     eos_token_id=self.tokenizer.eos_token_id,
-                    repetition_penalty=1.1
                 )
             
             # Decode output
-            generated_text = self.tokenizer.decode(
-                outputs[0], 
-                skip_special_tokens=True
-            )
+            generated_ids_trimmed = [
+                out_ids[len(in_ids):] for in_ids, out_ids in zip(inputs.input_ids, generated_ids)
+            ]
             
-            # Extract only the generated part (after the prompt)
+            generated_text = self.processor.batch_decode(
+                generated_ids_trimmed, skip_special_tokens=True, clean_up_tokenization_spaces=False
+            )[0]
+            
+            # Extract only the generated part
             if "Extracted JSON:" in generated_text:
                 result = generated_text.split("Extracted JSON:")[-1].strip()
             else:
-                result = generated_text[len(prompt):].strip()
+                result = generated_text.strip()
             
             return result
             
@@ -610,11 +647,12 @@ Extracted JSON:"""
             patient_id=patient_info.get("patient_id"),
             address=address,
             contact=contact,
+            phone=patient_info.get("phone"),
             insurance=insurance,
             cpt_codes=cpt_codes,
             icd10_codes=icd10_codes,
             service_info=service_info,
-            financial=financial,
+            financial_info=financial,
             provider=provider,
             extraction_confidence=0.8  # Default confidence
         )

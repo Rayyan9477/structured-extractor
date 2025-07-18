@@ -6,11 +6,25 @@ import sys
 from pathlib import Path
 import streamlit as st
 
-# Add the project root to the path
+# Add project root to path
 ROOT_DIR = Path(__file__).parent
-sys.path.append(str(ROOT_DIR.parent))
+sys.path.append(str(ROOT_DIR))
 
-# Run the Streamlit app
+from src.extraction_engine import ExtractionEngine
+from ui.app import run_ui_app
+
+def main():
+    """Initialize engine and launch the Streamlit UI."""
+    try:
+        # Initialize the extraction engine
+        engine = ExtractionEngine()
+        
+        # Run the Streamlit app
+        run_ui_app(engine)
+        
+    except Exception as e:
+        print(f"❌ Error launching UI: {e}")
+        print("Please ensure all dependencies are installed from requirements.txt")
+
 if __name__ == "__main__":
-    print("Starting Medical Superbill Extractor UI...")
-    os.system(f"streamlit run {os.path.join(ROOT_DIR, 'ui', 'app.py')}")
+    main()

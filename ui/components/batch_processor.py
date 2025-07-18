@@ -6,9 +6,12 @@ import os
 from pathlib import Path
 import pandas as pd
 import time
+import asyncio
+from src.extraction_engine import ExtractionEngine
+from src.core.data_schema import ExtractionResults
 
 
-def render_batch_processor():
+def render_batch_processor(engine: ExtractionEngine):
     """
     Render the batch processing component for handling multiple files.
     """
@@ -74,64 +77,46 @@ def render_batch_processor():
                 # Process each file with visual feedback
                 processed_results = []
                 
-                for i, file in enumerate(uploaded_files):
-                    status_text.text(f"Processing file {i+1}/{len(uploaded_files)}: {file.name}")
+                temp_dir = Path("temp_batch")
+                temp_dir.mkdir(exist_ok=True)
+                
+                file_paths = []
+                for file in uploaded_files:
+                    file_path = temp_dir / file.name
+                    with open(file_path, "wb") as f:
+                        f.write(file.getbuffer())
+                    file_paths.append(str(file_path))
+
+                try:
+                    batch_results = asyncio.run(engine.extract_batch(file_paths))
                     
-                    # Simulate processing steps with progress updates
-                    for step in range(5):
-                        time.sleep(0.2)  # Simulate processing time
-                        sub_progress = (i * 5 + step + 1) / (len(uploaded_files) * 5)
-                        progress_bar.progress(sub_progress)
+                    for i, result in enumerate(batch_results):
+                        status_text.text(f"Processed file {i+1}/{len(uploaded_files)}: {Path(result.file_path).name}")
+                        progress_bar.progress((i + 1) / len(uploaded_files))
+                        
+                        processed_results.append({
+                            "file_name": Path(result.file_path).name,
+                            "status": "Success" if result.success else "Failed",
+                            "patients_found": result.total_patients,
+                            "confidence": f"{result.extraction_confidence:.2%}"
+                        })
                     
-                    # Add simulated result (replace with actual processing)
-                    processed_results.append({
-                        "file_name": file.name,
-                        "status": "Success",
-                        "patients_found": 1,
-                        "cpt_codes_found": 3,
-                        "diagnosis_codes_found": 2
-                    })
-                
-                # Complete the progress
-                progress_bar.progress(1.0)
-                status_text.text("Batch processing complete!")
-                
-                # Display results summary
-                results_df = pd.DataFrame(processed_results)
-                results_placeholder.dataframe(results_df, use_container_width=True, hide_index=True)
-                
-                # Show export options
-                st.success(f"Successfully processed {len(uploaded_files)} files!")
-                
-                col1, col2, col3 = st.columns(3)
-                
-                with col1:
-                    st.download_button(
-                        "Download CSV",
-                        data=results_df.to_csv(index=False).encode('utf-8'),
-                        file_name="batch_results.csv",
-                        mime="text/csv",
-                        use_container_width=True
-                    )
-                
-                with col2:
-                    st.download_button(
-                        "Download Excel",
-                        data=_generate_excel_bytes(results_df),
-                        file_name="batch_results.xlsx",
-                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                        use_container_width=True
-                    )
-                
-                with col3:
-                    st.download_button(
-                        "Download JSON",
-                        data=results_df.to_json(orient="records"),
-                        file_name="batch_results.json",
-                        mime="application/json",
-                        use_container_width=True
-                    )
-    
+                    status_text.text("Batch processing complete!")
+                    
+                    results_df = pd.DataFrame(processed_results)
+                    results_placeholder.dataframe(results_df, use_container_width=True, hide_index=True)
+                    
+                    st.success(f"Successfully processed {len(uploaded_files)} files!")
+                    
+                    # Add export buttons for the entire batch
+                    
+                finally:
+                    # Clean up temp files
+                    for path in file_paths:
+                        os.remove(path)
+                    if temp_dir.exists():
+                        os.rmdir(temp_dir)
+
     else:
         # Show instructions when no files are uploaded
         st.info("Upload multiple files to begin batch processing.")

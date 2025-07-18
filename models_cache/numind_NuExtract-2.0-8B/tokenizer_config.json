@@ -1,0 +1,212 @@
+{
+  "add_bos_token": false,
+  "add_prefix_space": false,
+  "added_tokens_decoder": {
+    "151643": {
+      "content": "<|endoftext|>",
+      "lstrip": false,
+      "normalized": false,
+      "rstrip": false,
+      "single_word": false,
+      "special": true
+    },
+    "151644": {
+      "content": "<|im_start|>",
+      "lstrip": false,
+      "normalized": false,
+      "rstrip": false,
+      "single_word": false,
+      "special": true
+    },
+    "151645": {
+      "content": "<|im_end|>",
+      "lstrip": false,
+      "normalized": false,
+      "rstrip": false,
+      "single_word": false,
+      "special": true
+    },
+    "151646": {
+      "content": "<|object_ref_start|>",
+      "lstrip": false,
+      "normalized": false,
+      "rstrip": false,
+      "single_word": false,
+      "special": true
+    },
+    "151647": {
+      "content": "<|object_ref_end|>",
+      "lstrip": false,
+      "normalized": false,
+      "rstrip": false,
+      "single_word": false,
+      "special": true
+    },
+    "151648": {
+      "content": "<|box_start|>",
+      "lstrip": false,
+      "normalized": false,
+      "rstrip": false,
+      "single_word": false,
+      "special": true
+    },
+    "151649": {
+      "content": "<|box_end|>",
+      "lstrip": false,
+      "normalized": false,
+      "rstrip": false,
+      "single_word": false,
+      "special": true
+    },
+    "151650": {
+      "content": "<|quad_start|>",
+      "lstrip": false,
+      "normalized": false,
+      "rstrip": false,
+      "single_word": false,
+      "special": true
+    },
+    "151651": {
+      "content": "<|quad_end|>",
+      "lstrip": false,
+      "normalized": false,
+      "rstrip": false,
+      "single_word": false,
+      "special": true
+    },
+    "151652": {
+      "content": "<|vision_start|>",
+      "lstrip": false,
+      "normalized": false,
+      "rstrip": false,
+      "single_word": false,
+      "special": true
+    },
+    "151653": {
+      "content": "<|vision_end|>",
+      "lstrip": false,
+      "normalized": false,
+      "rstrip": false,
+      "single_word": false,
+      "special": true
+    },
+    "151654": {
+      "content": "<|vision_pad|>",
+      "lstrip": false,
+      "normalized": false,
+      "rstrip": false,
+      "single_word": false,
+      "special": true
+    },
+    "151655": {
+      "content": "<|image_pad|>",
+      "lstrip": false,
+      "normalized": false,
+      "rstrip": false,
+      "single_word": false,
+      "special": true
+    },
+    "151656": {
+      "content": "<|video_pad|>",
+      "lstrip": false,
+      "normalized": false,
+      "rstrip": false,
+      "single_word": false,
+      "special": true
+    },
+    "151657": {
+      "content": "<tool_call>",
+      "lstrip": false,
+      "normalized": false,
+      "rstrip": false,
+      "single_word": false,
+      "special": false
+    },
+    "151658": {
+      "content": "</tool_call>",
+      "lstrip": false,
+      "normalized": false,
+      "rstrip": false,
+      "single_word": false,
+      "special": false
+    },
+    "151659": {
+      "content": "<|fim_prefix|>",
+      "lstrip": false,
+      "normalized": false,
+      "rstrip": false,
+      "single_word": false,
+      "special": false
+    },
+    "151660": {
+      "content": "<|fim_middle|>",
+      "lstrip": false,
+      "normalized": false,
+      "rstrip": false,
+      "single_word": false,
+      "special": false
+    },
+    "151661": {
+      "content": "<|fim_suffix|>",
+      "lstrip": false,
+      "normalized": false,
+      "rstrip": false,
+      "single_word": false,
+      "special": false
+    },
+    "151662": {
+      "content": "<|fim_pad|>",
+      "lstrip": false,
+      "normalized": false,
+      "rstrip": false,
+      "single_word": false,
+      "special": false
+    },
+    "151663": {
+      "content": "<|repo_name|>",
+      "lstrip": false,
+      "normalized": false,
+      "rstrip": false,
+      "single_word": false,
+      "special": false
+    },
+    "151664": {
+      "content": "<|file_sep|>",
+      "lstrip": false,
+      "normalized": false,
+      "rstrip": false,
+      "single_word": false,
+      "special": false
+    }
+  },
+  "additional_special_tokens": [
+    "<|im_start|>",
+    "<|im_end|>",
+    "<|object_ref_start|>",
+    "<|object_ref_end|>",
+    "<|box_start|>",
+    "<|box_end|>",
+    "<|quad_start|>",
+    "<|quad_end|>",
+    "<|vision_start|>",
+    "<|vision_end|>",
+    "<|vision_pad|>",
+    "<|image_pad|>",
+    "<|video_pad|>"
+  ],
+  "bos_token": null,
+  "chat_template": "{% set image_placeholder = '<|vision_start|><|image_pad|><|vision_end|>' %}\n{% for message in messages %}\n    {#--- Handle User Messages with Template and Examples ---#}\n    {%- if message['role'] == 'user' and template -%}\n        {% if loop.first and message['role'] != 'system' %}\n            {{- '<|im_start|>system\nYou are NuExtract, an information extraction tool created by NuMind.<|im_end|>' }}\n        {% endif %}\n    \n        {{- '<|im_start|>' + message['role'] -}}\n        \n        {#--- Template Section ---#}\n        {{ '\n# Template:' }}\n        {{- '\n' + template + '\n' }}\n        \n        {#--- Examples Section (if provided) ---#}\n        {% if examples -%}\n            {{- '# Examples:' }}\n            {% for example in examples %}\n                {{- '## Input:\n' }}\n                {#--- Handle image examples ---#}\n                {% if example['input'] is mapping and example['input']['type'] == 'image' %}\n                    {{- image_placeholder | trim -}}\n                {% elif example['input'] == '<image>' %}\n                    {{- image_placeholder | trim -}}\n                {% else %}\n                    {{- example['input'] -}}\n                {% endif %}\n                {{- '\n## Output:\n' ~ example['output'] }}\n            {% endfor %}\n        {%- endif %}\n        \n        {#--- Context Section: Handle various content types ---#}\n        {{- '# Context:\n' }}\n        {%- if message['content'] is string -%}\n            {#--- Simple string content ---#}\n            {{- message['content'] | trim -}}\n        {%- elif message['content'] is mapping and message['content']['type'] == 'image' -%}\n            {#--- Single image document ---#}\n            {{- image_placeholder | trim -}}\n        {%- else -%}\n            {#--- List of content items (mixed text/images) ---#}\n            {#--- First, determine what the actual input content is (not ICL images) ---#}\n            {%- set ns = namespace(has_text_input=false, text_content='') -%}\n            \n            {#--- Count content types and identify actual input document ---#}\n            {%- for content in message['content'] -%}\n                {%- if content is mapping and content.get('type') == 'text' -%}\n                    {%- if content.get('text') != '<image>' -%}\n                        {%- set ns.has_text_input = true -%}\n                        {%- set ns.text_content = content['text'] -%}\n                    {%- endif -%}\n                {%- elif content is string -%}\n                    {%- if content != '<image>' -%}\n                        {%- set ns.has_text_input = true -%}\n                        {%- set ns.text_content = content -%}\n                    {%- endif -%}\n                {%- endif -%}\n            {%- endfor -%}\n            \n            {#--- Determine what to output based on actual input type ---#}\n            {%- if ns.has_text_input -%}\n                {#--- Main input is text, so output the text content ---#}\n                {{- ns.text_content | trim -}}\n            {%- else -%}\n                {#--- Main input is image or <image> placeholder ---#}\n                {%- set ns2 = namespace(found_image=false) -%}\n                {%- for content in message['content'] -%}\n                    {%- if content is mapping and content.get('type') == 'image' and not ns2.found_image -%}\n                        {{- image_placeholder | trim -}}\n                        {%- set ns2.found_image = true -%}\n                    {%- elif content is mapping and content.get('type') == 'text' and content.get('text') == '<image>' and not ns2.found_image -%}\n                        {{- image_placeholder | trim -}}\n                        {%- set ns2.found_image = true -%}\n                    {%- elif content is string and content == '<image>' and not ns2.found_image -%}\n                        {{- image_placeholder | trim -}}\n                        {%- set ns2.found_image = true -%}\n                    {%- endif -%}\n                {%- endfor -%}\n            {%- endif -%}\n        {%- endif -%}\n        {{- '<|im_end|>\n'}}\n        \n    {#--- Handle All Other Messages (Assistant, System, etc.) ---#}\n    {% else %}\n        {% if loop.first and message['role'] != 'system' %}\n            {{- '<|im_start|>system\nYou are a helpful assistant.<|im_end|>' }}\n        {% endif %}\n        \n        {{- '<|im_start|>' + message['role'] + '\n' }}\n        \n        {#--- Same content handling logic as above but without template/examples ---#}\n        {%- if message['content'] is string -%}\n            {{- message['content'] | trim }}\n        {%- elif message['content'] is mapping and message['content']['type'] == 'image' -%}\n            {{- image_placeholder | trim }}\n        {%- else -%}\n            {%- for content in message['content'] -%}\n                {%- if content is string -%}\n                    {{- content | trim -}}\n                {%- elif content is mapping and content.get('type') == 'text' and content.get('text') == '<image>' -%}\n                    {{- image_placeholder | trim }}\n                {%- elif content is mapping and content.get('type') == 'text' -%}\n                    {{- content['text'] | trim -}}\n                {%- elif content is mapping and content.get('type') == 'image' -%}\n                    {# Skip adding image placeholder - it's already in the text #}\n                {%- endif -%}\n            {%- endfor -%}\n        {%- endif -%}\n        {{- '<|im_end|>'}}\n    {% endif %}\n{% endfor -%}\n{#--- Add Generation Prompt if Requested ---#}\n{%- if add_generation_prompt %}\n    {{- '<|im_start|>assistant' }}\n{% endif -%}",
+  "clean_up_tokenization_spaces": false,
+  "eos_token": "<|im_end|>",
+  "errors": "replace",
+  "extra_special_tokens": {},
+  "max_pixels": 2352000,
+  "min_pixels": 200704,
+  "model_max_length": 131072,
+  "pad_token": "<|endoftext|>",
+  "padding_side": "left",
+  "processor_class": "Qwen2_5_VLProcessor",
+  "split_special_tokens": false,
+  "tokenizer_class": "Qwen2Tokenizer",
+  "unk_token": null
+}
