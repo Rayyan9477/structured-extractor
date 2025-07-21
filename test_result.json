@@ -1,0 +1,22 @@
+{
+  "metadata": {
+    "file_name": "r.pdf",
+    "file_path": "superbills\\r.pdf",
+    "file_size": 664761,
+    "page_count": 7,
+    "processing_time": 35.26957559585571,
+    "extraction_date": "2025-07-21 09:35:23"
+  },
+  "ocr_confidence": 0.0,
+  "extraction_confidence": 0.0,
+  "overall_confidence": 0.0,
+  "structured_data": {
+    "title": null,
+    "date": null,
+    "sender": null,
+    "receiver": null,
+    "content": null,
+    "key_points": [],
+    "metadata": {}
+  }
+}

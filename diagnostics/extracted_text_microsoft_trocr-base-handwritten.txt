@@ -1,0 +1,9 @@
+Model: microsoft/trocr-base-handwritten
+Confidence: 0.9
+Processing time: 0.2697877883911133
+Text length: 3
+
+============================================================
+EXTRACTED TEXT:
+============================================================
+0 1

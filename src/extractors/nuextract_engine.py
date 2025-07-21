@@ -77,40 +77,37 @@ class NuExtractEngine:
         try:
             self.logger.info("Loading NuExtract model...")
             
-            # Determine model path
-            model_path = Path("models_cache") / "numind_NuExtract-2.0-8B"
+            # Get correct model path
+            model_path = Path(self.config.get_model_path(self.model_name))
             
             if not model_path.exists():
                 self.logger.warning(f"Local model not found at {model_path}, using remote model")
                 model_path = self.model_name
             
-            # Load tokenizer and processor for Qwen2.5-VL
-            from transformers import AutoTokenizer, AutoProcessor, Qwen2_5_VLForConditionalGeneration
-            
-            self.tokenizer = AutoTokenizer.from_pretrained(
-                str(model_path), 
-                trust_remote_code=True
-            )
+            # Load processor and model for Qwen2.5-VL based NuExtract
+            from transformers import AutoProcessor, AutoModelForVision2Seq
             
             self.processor = AutoProcessor.from_pretrained(
                 str(model_path), 
-                trust_remote_code=True
+                trust_remote_code=True,
+                padding_side='left',
+                use_fast=True
             )
             
-            # Load model
-            self.model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
+            # Load the model for Vision2Seq tasks
+            self.model = AutoModelForVision2Seq.from_pretrained(
                 str(model_path),
-                torch_dtype=torch.float16 if torch.cuda.is_available() else torch.float32,
+                torch_dtype=torch.bfloat16 if torch.cuda.is_available() else torch.float32,
                 device_map="auto" if torch.cuda.is_available() else None,
                 trust_remote_code=True
             )
             
-            # Set pad token if not present
-            if self.tokenizer.pad_token is None:
-                self.tokenizer.pad_token = self.tokenizer.eos_token
+            if not torch.cuda.is_available():
+                self.model.to(self.device)
             
-            self.logger.info(f"NuExtract model loaded successfully")
-            self.logger.info(f"Model loaded on device: {self.device}")
+            self.model.eval()
+            
+            self.logger.info(f"NuExtract model loaded successfully on device: {self.device}")
             
         except Exception as e:
             self.logger.error(f"Failed to load NuExtract model: {e}")
@@ -358,7 +355,7 @@ Extracted JSON:"""
     async def _generate_extraction(self, prompt: str) -> str:
         """Generate extraction using the model."""
         try:
-            # Prepare messages for Qwen2.5-VL
+            # Prepare messages for Qwen2.5-VL based NuExtract
             messages = [
                 {
                     "role": "user",
@@ -376,11 +373,10 @@ Extracted JSON:"""
                 messages, tokenize=False, add_generation_prompt=True
             )
             
-            # Process inputs (text-only for now)
+            # Process inputs (text-only for structured extraction)
             inputs = self.processor(
                 text=[text],
                 images=None,
-                videos=None,
                 padding=True,
                 return_tensors="pt",
             )
@@ -388,34 +384,34 @@ Extracted JSON:"""
             # Move to device
             inputs = inputs.to(self.model.device)
             
+            # Generate with optimized parameters for 8B model
+            generation_config = {
+                "do_sample": False,
+                "num_beams": 1,
+                "max_new_tokens": 2048,
+                "temperature": self.temperature if hasattr(self, 'temperature') else 0.1,
+                "top_p": self.top_p if hasattr(self, 'top_p') else 0.9,
+                "eos_token_id": self.processor.tokenizer.eos_token_id,
+                "pad_token_id": self.processor.tokenizer.eos_token_id,
+            }
+            
             # Generate
             with torch.no_grad():
                 generated_ids = self.model.generate(
                     **inputs,
-                    max_new_tokens=1024,
-                    temperature=self.temperature,
-                    top_p=self.top_p,
-                    do_sample=True,
-                    pad_token_id=self.tokenizer.eos_token_id,
-                    eos_token_id=self.tokenizer.eos_token_id,
+                    **generation_config
                 )
             
-            # Decode output
+            # Decode output - extract only the generated part
             generated_ids_trimmed = [
                 out_ids[len(in_ids):] for in_ids, out_ids in zip(inputs.input_ids, generated_ids)
             ]
             
-            generated_text = self.processor.batch_decode(
+            output_text = self.processor.batch_decode(
                 generated_ids_trimmed, skip_special_tokens=True, clean_up_tokenization_spaces=False
             )[0]
             
-            # Extract only the generated part
-            if "Extracted JSON:" in generated_text:
-                result = generated_text.split("Extracted JSON:")[-1].strip()
-            else:
-                result = generated_text.strip()
-            
-            return result
+            return output_text.strip()
             
         except Exception as e:
             self.logger.error(f"Generation failed: {e}")

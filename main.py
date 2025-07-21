@@ -14,7 +14,7 @@ import json
 
 from src.core.config_manager import ConfigManager
 from src.core.logger import setup_logger, get_logger
-from src.core.data_schema import ExtractionResult, SuperbillDocument
+from src.core.data_schema import ExtractionResults, SuperbillDocument
 
 
 def setup_argument_parser() -> argparse.ArgumentParser:
@@ -179,7 +179,7 @@ async def process_single_file(
     config: ConfigManager,
     output_path: Optional[Path] = None,
     output_format: str = "json"
-) -> ExtractionResult:
+) -> ExtractionResults:
     """
     Process a single PDF file.
     
@@ -197,40 +197,33 @@ async def process_single_file(
     
     try:
         # Import processing modules (lazy loading)
-        from src.processors.document_processor import DocumentProcessor
-        from src.extractors.field_extractor import FieldExtractor
-        from src.exporters.data_exporter import DataExporter
+        from src.unified_extraction_system import UnifiedExtractionSystem
         
-        # Initialize processors
-        doc_processor = DocumentProcessor(config)
-        field_extractor = FieldExtractor(config)
-        data_exporter = DataExporter(config)
+        # Initialize unified extraction system
+        extraction_system = UnifiedExtractionSystem(str(config.config_path))
         
         # Process document
-        logger.info("Converting PDF to images...")
-        images = await doc_processor.process_pdf(str(file_path))
-        
-        logger.info("Extracting structured data...")
-        extraction_result = await field_extractor.extract_from_images(images)
+        logger.info("Extracting structured data from document...")
+        extraction_result = await extraction_system.extract_from_file(str(file_path))
         
         if extraction_result.success and output_path:
             logger.info(f"Exporting results to {output_path}")
             if output_format == "json":
-                await data_exporter.export_json(extraction_result.document, output_path)
+                await extraction_system.export_results(extraction_result, output_path, "json")
             elif output_format == "csv":
-                await data_exporter.export_csv(extraction_result.document, output_path)
+                await extraction_system.export_results(extraction_result, output_path, "csv")
             elif output_format == "both":
                 json_path = output_path.with_suffix('.json')
                 csv_path = output_path.with_suffix('.csv')
-                await data_exporter.export_json(extraction_result.document, json_path)
-                await data_exporter.export_csv(extraction_result.document, csv_path)
+                await extraction_system.export_results(extraction_result, json_path, "json")
+                await extraction_system.export_results(extraction_result, csv_path, "csv")
         
         logger.info("Processing completed successfully")
         return extraction_result
         
     except Exception as e:
         logger.error(f"Error processing {file_path}: {str(e)}")
-        return ExtractionResult(
+        return ExtractionResults(
             success=False,
             error_message=str(e)
         )
@@ -241,7 +234,7 @@ async def process_multiple_files(
     config: ConfigManager,
     output_dir: Path,
     output_format: str = "json"
-) -> List[ExtractionResult]:
+) -> List[ExtractionResults]:
     """
     Process multiple PDF files.
     

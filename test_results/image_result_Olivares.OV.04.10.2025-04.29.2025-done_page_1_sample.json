@@ -1,0 +1,16 @@
+{
+  "metadata": {
+    "file_name": "Olivares.OV.04.10.2025-04.29.2025-done_page_1_sample.png",
+    "file_path": "diagnostics/Olivares.OV.04.10.2025-04.29.2025-done_page_1_sample.png",
+    "file_size": 1196962,
+    "page_count": 1,
+    "processing_time": 30.60436749458313,
+    "extraction_date": "2025-07-21 05:42:16"
+  },
+  "ocr_confidence": 0.85,
+  "extraction_confidence": 0.0,
+  "overall_confidence": 0.255,
+  "structured_data": {
+    "error": "look-behind requires fixed-width pattern"
+  }
+}

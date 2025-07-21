@@ -67,15 +67,35 @@ class PatientBoundaryDetector:
         self.patient_config = config.get("patient_detection", {})
         self.max_patients = self.patient_config.get("max_patients_per_document", 10)
         self.confidence_threshold = self.patient_config.get("confidence_threshold", 0.8)
+        
+        # Enhanced list of separation keywords for better patient identification
         self.separation_keywords = self.patient_config.get("separation_keywords", [
-            "PATIENT", "NAME", "DOB", "ACCOUNT", "CLAIM", "PT", "PATIENT NAME"
+            "PATIENT", "NAME", "DOB", "ACCOUNT", "CLAIM", "PT", "PATIENT NAME", 
+            "PATIENT ID", "MEDICAL RECORD", "MRN", "INSURANCE", "POLICY",
+            "PATIENT INFORMATION", "DEMOGRAPHICS", "DATE OF BIRTH"
         ])
+        
+        # Additional patterns for patient identification
+        self.patient_id_patterns = [
+            r"(?:MRN|ID)[:.\s]*([A-Za-z0-9-]+)",
+            r"(?:PATIENT|PT)[\s#]+([A-Za-z0-9-]+)",
+            r"ACCOUNT[\s#:]+([A-Za-z0-9-]+)"
+        ]
+        
+        self.name_patterns = [
+            r"(?:PATIENT|PT|NAME)[:.\s]+((?:[A-Z][a-z]+\s+){1,2}[A-Z][a-z]+)",
+            r"(?:LAST|FIRST)[:.\s]+((?:[A-Z][a-z]+\s*)+)"
+        ]
         
         # Compile keyword patterns
         self.keyword_patterns = [
             re.compile(rf"\b{keyword}\b", re.IGNORECASE) 
             for keyword in self.separation_keywords
         ]
+        
+        # Compile identification patterns
+        self.id_patterns = [re.compile(p, re.IGNORECASE) for p in self.patient_id_patterns]
+        self.patient_name_patterns = [re.compile(p, re.IGNORECASE) for p in self.name_patterns]
     
     def detect_patient_boundaries(self, text: str) -> List[PatientBoundary]:
         """
@@ -94,13 +114,16 @@ class PatientBoundaryDetector:
         # Method 1: Keyword-based detection
         boundaries.extend(self._detect_keyword_boundaries(text))
         
-        # Method 2: Pattern repetition detection
+        # Method 2: Patient identifier detection (new)
+        boundaries.extend(self._detect_patient_identifiers(text))
+        
+        # Method 3: Pattern repetition detection
         boundaries.extend(self._detect_pattern_boundaries(text))
         
-        # Method 3: Form structure detection
+        # Method 4: Form structure detection
         boundaries.extend(self._detect_form_boundaries(text))
         
-        # Method 4: Line-based detection
+        # Method 5: Line-based detection
         boundaries.extend(self._detect_line_boundaries(text))
         
         # Initial validation of boundaries
@@ -123,6 +146,86 @@ class PatientBoundaryDetector:
         
         self.logger.debug(f"Detected {len(validated_boundaries)} patient boundaries")
         return validated_boundaries
+        
+    def _detect_patient_identifiers(self, text: str) -> List[PatientBoundary]:
+        """
+        Detect patient boundaries based on patient identifiers like MRN or patient ID.
+        
+        Args:
+            text: Input text
+            
+        Returns:
+            List of detected boundaries
+        """
+        boundaries = []
+        
+        # Find patient IDs
+        for pattern in self.id_patterns:
+            for match in pattern.finditer(text):
+                patient_id = match.group(1) if match.groups() else None
+                if patient_id:
+                    # Look for context around the ID
+                    context_start = max(0, match.start() - 50)
+                    context_end = min(len(text), match.end() + 50)
+                    context = text[context_start:context_end]
+                    
+                    # If this context looks like a new patient section, add boundary
+                    if self._context_suggests_new_patient(context):
+                        boundaries.append(PatientBoundary(
+                            start_position=match.start(),
+                            end_position=None,
+                            boundary_type=BoundaryType.FORM_STRUCTURE,
+                            confidence=0.85,  # High confidence for patient IDs
+                            keywords_found=[match.group(0)],
+                            patient_index=0  # Will be set later
+                        ))
+        
+        # Find patient names
+        for pattern in self.patient_name_patterns:
+            for match in pattern.finditer(text):
+                name = match.group(1) if match.groups() else None
+                if name:
+                    # Look for context around the name
+                    context_start = max(0, match.start() - 50)
+                    context_end = min(len(text), match.end() + 50)
+                    context = text[context_start:context_end]
+                    
+                    # If this context looks like a new patient section, add boundary
+                    if self._context_suggests_new_patient(context):
+                        boundaries.append(PatientBoundary(
+                            start_position=match.start(),
+                            end_position=None,
+                            boundary_type=BoundaryType.FORM_STRUCTURE,
+                            confidence=0.8,
+                            keywords_found=[match.group(0)],
+                            patient_index=0  # Will be set later
+                        ))
+        
+        return boundaries
+    
+    def _context_suggests_new_patient(self, context: str) -> bool:
+        """
+        Check if the context suggests a new patient section.
+        
+        Args:
+            context: Text context around a potential boundary
+            
+        Returns:
+            True if context suggests a new patient section
+        """
+        # Check for demographic indicators
+        demographic_indicators = [
+            r"\bDOB\b", r"\bBIRTH\b", r"\bAGE\b", r"\bSEX\b", r"\bGENDER\b",
+            r"\bADDRESS\b", r"\bPHONE\b", r"\bEMAIL\b", r"\bINSURANCE\b"
+        ]
+        
+        indicator_count = 0
+        for indicator in demographic_indicators:
+            if re.search(indicator, context, re.IGNORECASE):
+                indicator_count += 1
+        
+        # If at least 2 demographic indicators are present, likely a new patient section
+        return indicator_count >= 2
     
     def _detect_keyword_boundaries(self, text: str) -> List[PatientBoundary]:
         """Detect boundaries based on separation keywords."""
@@ -834,7 +937,9 @@ class MultiPatientHandler:
     async def process_multi_patient_document(
         self, 
         text: str, 
-        extractor_func
+        extractor_func,
+        page_number: int = 1,
+        total_pages: int = 1
     ) -> List[PatientData]:
         """
         Process a multi-patient document.
@@ -842,11 +947,13 @@ class MultiPatientHandler:
         Args:
             text: Input text containing multiple patients
             extractor_func: Function to extract patient data from text segment
+            page_number: Current page number (for multi-page documents)
+            total_pages: Total number of pages
             
         Returns:
             List of extracted patient data
         """
-        self.logger.info("Processing multi-patient document")
+        self.logger.info(f"Processing multi-patient document (page {page_number}/{total_pages})")
         
         # Segment text by patient
         segments = self.segmenter.segment_text(text)
@@ -855,13 +962,16 @@ class MultiPatientHandler:
         patient_data_list = []
         
         for segment in segments:
-            self.logger.debug(f"Processing patient segment {segment.patient_index}")
+            self.logger.debug(f"Processing patient segment {segment.patient_index} on page {page_number}")
             
             try:
                 # Extract patient data
                 patient_data = await extractor_func(segment.text, segment.patient_index)
                 
                 if patient_data:
+                    # Set page-related metadata
+                    patient_data.page_number = page_number
+                    
                     # Validate data
                     is_valid, errors = self.validator.validate_patient_data(patient_data)
                     
@@ -874,16 +984,16 @@ class MultiPatientHandler:
                         patient_data_list.append(patient_data)
                 
             except Exception as e:
-                self.logger.error(f"Failed to extract data for patient {segment.patient_index}: {e}")
+                self.logger.error(f"Failed to extract data for patient {segment.patient_index} on page {page_number}: {e}")
         
-        # Check for duplicates
+        # Check for duplicates within this page
         duplicates = self.validator.detect_duplicates(patient_data_list)
         
         if duplicates:
-            self.logger.warning(f"Detected {len(duplicates)} potential duplicate patients")
+            self.logger.warning(f"Detected {len(duplicates)} potential duplicate patients on page {page_number}")
             patient_data_list = self._merge_duplicates(patient_data_list, duplicates)
         
-        self.logger.info(f"Successfully processed {len(patient_data_list)} patients")
+        self.logger.info(f"Successfully processed {len(patient_data_list)} patients on page {page_number}")
         return patient_data_list
     
     def _merge_duplicates(

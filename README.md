@@ -1,286 +1,177 @@
-# Medical Superbill Data Extraction System
+# Unified Structured Extraction System
 
-A comprehensive Python project for extracting structured data from medical superbills using advanced OCR and NLP models from Hugging Face.
+A powerful document extraction system that combines multiple OCR and extraction models to achieve high accuracy in extracting structured data from documents.
+
+## Models Used
+
+This system leverages three powerful models for optimal extraction performance:
+
+1. **NumInd NuExtract-2.0-8B** - A state-of-the-art language model specialized for extracting structured information from raw text. It converts document text into well-formatted structured data according to provided schemas.
+
+2. **Monkey OCR** - An advanced OCR engine optimized for complex document layouts. It excels at processing documents with mixed formats, tables, and varying font styles.
+
+3. **Nanonets OCR** - A specialized OCR model with high accuracy for document understanding. It has particularly strong performance for detecting form fields and structured content.
+
+The system integrates these models in a carefully designed pipeline:
+- Both OCR models process the document images in parallel
+- Results are ensembled using a weighted voting mechanism
+- The combined OCR text is fed into NuExtract for structured extraction
+- Confidence scores from all models contribute to the final quality assessment
 
 ## Features
 
-- **Multi-Model OCR**: Combines MonkeyOCR for handwriting and Nanonets-OCR for printed text
-- **Intelligent Field Extraction**: Uses NuExtract-2.0-4B for structured data extraction
-- **Multi-Patient Support**: Handles multiple patients in single documents
-- **HIPAA Compliance**: PHI detection and optional anonymization
-- **Flexible Export**: CSV and JSON output formats
-- **Medical Code Validation**: CPT and ICD-10 code verification
-- **High Performance**: GPU acceleration and batch processing
-- **Modern UI**: Intuitive web interface built with Streamlit
+- **Multi-model OCR ensemble** - Combines Monkey OCR and Nanonets OCR results for improved text recognition
+- **Structured data extraction** - Uses NumInd NuExtract 8B to convert text to structured data
+- **Customizable templates** - Define custom schemas for different document types
+- **Confidence scoring** - Provides detailed confidence scores for extracted data
+- **Multiple export formats** - Export results to JSON, CSV, XML, or plain text
+- **Batch processing** - Process multiple documents efficiently
+- **Command-line interface** - Easy to use from the command line
+- **Programmatic API** - Integrate with other applications
 
-## Quick Start
+## Installation
 
-### Installation
+### Prerequisites
+
+- Python 3.8 or higher
+- pip package manager
+- Sufficient disk space for model weights (approximately 16GB for all models)
+- GPU recommended for faster processing with NuExtract 8B
+
+### Setup
+
+1. Clone the repository:
+   ```
+   git clone https://github.com/yourusername/structured-extractor.git
+   cd structured-extractor
+   ```
+
+2. Install dependencies:
+   ```
+   pip install -r requirements.txt
+   ```
+
+3. Configure the system:
+   ```
+   python src/cli.py config create
+   ```
+   
+4. Set up API keys in the configuration file:
+   - For Monkey OCR: Set your API key in the `ocr.monkey_ocr.api_key` field
+   - For Nanonets OCR: Set your API key in the `ocr.nanonets_ocr.api_key` field
+
+## Usage
+
+### Command Line Interface
+
+The system provides a powerful command-line interface:
 
 ```bash
-# Clone the repository
-git clone https://github.com/Rayyan9477/structured-extractor.git
-cd structured-extractor
+# Extract from a file using all three models
+python src/cli.py extract-file document.pdf -o results.json
 
-# Install dependencies
-pip install -r requirements.txt
+# Extract using a specific template
+python src/cli.py extract-file document.pdf -t medical -o results.json
+
+# Batch processing
+python src/cli.py batch documents_folder/ -o output_folder/
+
+# Show help
+python src/cli.py -h
 ```
 
-### Basic Usage
+### Python API
+
+You can also use the Python API in your applications:
+
+```python
+import asyncio
+from src.unified_extraction_system import UnifiedExtractionSystem
+
+async def extract_example():
+    # Initialize the extraction system
+    extractor = UnifiedExtractionSystem()
+    
+    # Extract from a file
+    result = await extractor.extract_from_file(
+        "document.pdf",
+        output_path="results.json"
+    )
+    
+    print(f"Extraction confidence: {result.overall_confidence}")
+    print(f"OCR confidence: {result.ocr_confidence}")
+    print(f"NuExtract confidence: {result.extraction_confidence}")
+    print(result.structured_data)
+
+# Run the example
+asyncio.run(extract_example())
+```
+
+## Example Usage
+
+Run the included example script:
 
 ```bash
-# Process a single PDF file
-python main.py input_superbill.pdf --output results.json
-
-# Process multiple files
-python main.py *.pdf --output-dir ./results/ --format csv
-
-# Enable PHI anonymization
-python main.py input.pdf --anonymize-phi --output results.json
-
-# Launch the web UI
-python run_ui.py
+python examples/extract_document.py --file your_document.pdf
 ```
 
-### Using the Web UI
-
-The web UI provides an intuitive interface for all extraction features:
+### More Examples:
 
 ```bash
-# Start the web interface
-python run_ui.py
-```
+# Extract medical document using the medical template
+python examples/extract_document.py --medical medical_report.pdf
 
-This will open a browser window with the Medical Superbill Extractor UI, where you can:
+# Process a batch of documents
+python examples/extract_document.py --batch documents_folder/
 
-- Upload and process individual files
-- Batch process multiple documents
-- Configure extraction parameters
-- Export results in various formats
-- Validate extraction results
+# Extract with custom schema
+python examples/extract_document.py --custom invoice.pdf
 
-## Project Structure
-
-```
-structured-extractor/
-├── src/                          # Source code
-│   ├── core/                     # Core functionality
-│   │   ├── config_manager.py     # Configuration management
-│   │   ├── logger.py             # HIPAA-compliant logging
-│   │   └── data_schema.py        # Data models and validation
-│   ├── processors/               # Document processing
-│   ├── models/                   # Model management
-│   ├── extractors/               # Field extraction
-│   ├── validators/               # Data validation
-│   └── exporters/                # Output generation
-├── config/                       # Configuration files
-│   └── config.yaml              # Main configuration
-├── docs/                        # Documentation
-├── tests/                       # Test files
-├── examples/                    # Usage examples
-├── data/                        # Sample data
-├── main.py                      # Application entry point
-└── requirements.txt             # Dependencies
+# Export to multiple formats
+python examples/extract_document.py --formats document.pdf --output exports/
 ```
 
 ## Configuration
 
-The system uses YAML configuration files for flexible setup:
+The system can be configured by editing `config/config.yaml`:
 
-```yaml
-# Example configuration
-models:
-  ocr:
-    monkey_ocr:
-      model_name: "echo840/MonkeyOCR"
-      confidence_threshold: 0.7
-    nanonets_ocr:
-      model_name: "nanonets/Nanonets-OCR-s"
-      confidence_threshold: 0.8
-  
-  extraction:
-    nuextract:
-      model_name: "numind/NuExtract-2.0-4B"
-      temperature: 0.1
+### Key Configuration Options:
 
-extraction_fields:
-  required_fields:
-    - "cpt_codes"
-    - "diagnosis_codes"
-    - "patient_name"
-    - "date_of_service"
+1. **OCR Model Settings**:
+   - Enable/disable specific OCR models
+   - Adjust model weights in the ensemble
+   - Configure API endpoints and keys
+
+2. **NuExtract Settings**:
+   - Adjust temperature and other generation parameters
+   - Define custom extraction templates
+   - Configure confidence thresholds
+
+3. **Export Settings**:
+   - Configure output formats
+   - Set default export directory
+
+## Folder Structure
+
 ```
-
-## Extracted Fields
-
-The system extracts the following key fields from superbills:
-
-### Patient Information
-- Patient name, DOB, address, phone
-- Insurance information
-- Account/patient ID numbers
-
-### Medical Codes
-- **CPT Codes**: 5-digit procedure codes
-- **ICD-10 Codes**: Diagnosis codes
-- **Modifiers**: Procedure modifiers
-
-### Service Information
-- Date of service
-- Claim date
-- Place of service
-- Visit type and duration
-
-### Financial Information
-- Charges and fees
-- Copayments
-- Outstanding balances
-- Payment information
-
-### Provider Information
-- Provider name and NPI
-- Practice information
-- Referring providers
-
-## Command Line Options
-
-```bash
-# Input and Output
-python main.py input.pdf --output results.json
-python main.py *.pdf --output-dir ./results/
-python main.py input.pdf --format csv
-
-# Processing Options
-python main.py input.pdf --batch-size 8 --max-workers 4
-python main.py input.pdf --gpu  # Force GPU usage
-python main.py input.pdf --cpu-only  # Force CPU usage
-
-# PHI and Security
-python main.py input.pdf --anonymize-phi
-python main.py input.pdf --detect-phi-only
-
-# Quality Control
-python main.py input.pdf --confidence-threshold 0.8
-python main.py input.pdf --validate-codes
-python main.py input.pdf --skip-validation
-
-# Logging and Debug
-python main.py input.pdf --verbose
-python main.py input.pdf --debug
-python main.py input.pdf --log-file extraction.log
+structured-extractor/
+├── config/                # Configuration files
+├── examples/              # Example usage scripts
+├── output/                # Default output directory
+├── src/                   # Source code
+│   ├── core/              # Core modules and utilities
+│   ├── processors/        # Document and OCR processors
+│   │   ├── monkey_ocr.py  # Monkey OCR integration
+│   │   ├── nanonets_ocr.py # Nanonets OCR integration
+│   │   └── ocr_ensemble.py # OCR ensemble engine
+│   ├── extractors/        # Structured data extractors
+│   │   └── nuextract_structured_extractor.py # NuExtract integration
+│   ├── exporters/         # Export formatters
+│   ├── cli.py             # Command line interface
+│   └── unified_extraction_system.py  # Main system
+└── tests/                 # Test suite
 ```
-
-## Output Formats
-
-### JSON Output
-```json
-{
-  "metadata": {
-    "document_id": "doc_001",
-    "source_file": "superbill.pdf",
-    "processing_timestamp": "2025-07-17T10:30:00Z"
-  },
-  "patients": [
-    {
-      "first_name": "John",
-      "last_name": "Doe",
-      "date_of_birth": "1980-01-15",
-      "cpt_codes": [
-        {
-          "code": "99213",
-          "description": "Office visit",
-          "charge": 150.00
-        }
-      ],
-      "icd10_codes": [
-        {
-          "code": "M54.5",
-          "description": "Low back pain"
-        }
-      ]
-    }
-  ]
-}
-```
-
-### CSV Output
-Patient-separated CSV with all extracted fields in tabular format.
-
-## HIPAA Compliance
-
-The system includes comprehensive HIPAA compliance features:
-
-- **PHI Detection**: Automatic identification of protected health information
-- **Audit Logging**: Complete audit trails for all operations
-- **Data Security**: Secure handling and optional anonymization
-- **Access Controls**: User authentication and authorization
-- **Encryption**: Data encryption in transit and at rest
-
-## Performance
-
-- **Processing Speed**: <30 seconds per page
-- **Accuracy**: >95% for critical fields
-- **Memory Usage**: <8GB for standard documents
-- **Concurrent Processing**: Up to 4 documents simultaneously
-
-## Development
-
-### Running Tests
-```bash
-pytest tests/ -v --cov=src
-```
-
-### Code Quality
-```bash
-# Linting
-flake8 src/
-
-# Type checking
-mypy src/
-
-# Security scanning
-bandit -r src/
-```
-
-## API Usage
-
-The system also provides a REST API for programmatic access:
-
-```python
-import requests
-
-# Upload and process a file
-with open('superbill.pdf', 'rb') as f:
-    response = requests.post(
-        'http://localhost:8000/extract',
-        files={'file': f},
-        data={'format': 'json', 'anonymize_phi': True}
-    )
-
-result = response.json()
-```
-
-## Contributing
-
-1. Fork the repository
-2. Create a feature branch
-3. Make your changes
-4. Add tests
-5. Submit a pull request
 
 ## License
 
 This project is licensed under the MIT License - see the LICENSE file for details.
-
-## Support
-
-For questions, issues, or feature requests:
-- Create an issue on GitHub
-- Contact the development team
-- Check the documentation in the `docs/` directory
-
-## Acknowledgments
-
-- Hugging Face for providing the ML models
-- Medical coding communities for validation resources
-- HIPAA compliance guidelines and best practices

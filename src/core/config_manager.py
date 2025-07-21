@@ -50,7 +50,21 @@ class ConfigManager:
     
     def get_cache_dir(self) -> str:
         """Get model cache directory."""
-        return self.get("global.cache_dir", "models_cache")
+        # Check if models_cache exists, otherwise use models directory
+        cache_dir = self.get("global.cache_dir", "models")
+        project_root = Path(__file__).parent.parent.parent
+        
+        # Check both possible model directories
+        models_cache_path = project_root / "models_cache"
+        models_path = project_root / "models"
+        
+        if models_cache_path.exists():
+            return str(models_cache_path)
+        elif models_path.exists():
+            return str(models_path)
+        else:
+            # Default to models directory
+            return str(models_path)
 
     def get_logging_config(self) -> Dict[str, Any]:
         """Get logging configuration."""
@@ -89,7 +103,32 @@ class ConfigManager:
         Returns:
             Model configuration dictionary
         """
-        return self.get(f"models.{model_type}.{model_name}", {})
+        return self.get(f"{model_type}.{model_name}", {})
+    
+    def get_model_path(self, model_name: str) -> str:
+        """
+        Get the correct path for a model based on the downloaded structure.
+        
+        Args:
+            model_name: Model name (e.g., 'numind/NuExtract-2.0-8B')
+            
+        Returns:
+            Local path to the model
+        """
+        from pathlib import Path
+        
+        # Get base models directory
+        models_dir = Path(self.get("global.cache_dir", "models"))
+        
+        # Convert model name to directory name
+        model_dir_name = model_name.replace("/", "_")
+        model_path = models_dir / model_dir_name
+        
+        if model_path.exists():
+            return str(model_path)
+        
+        # Fallback to original name if directory doesn't exist
+        return model_name
     
     def get_extraction_fields(self) -> Dict[str, list]:
         """Get field extraction configuration."""
@@ -106,6 +145,54 @@ class ConfigManager:
     def get_security_config(self) -> Dict[str, Any]:
         """Get security and compliance configuration."""
         return self.get("security", {})
+    
+    def get_model_path(self, model_identifier: str) -> Path:
+        """
+        Get the local path for a specific model.
+        
+        Args:
+            model_identifier: Model identifier (e.g., 'echo840/MonkeyOCR', 'nanonets/Nanonets-OCR-s')
+            
+        Returns:
+            Path to the local model directory
+        """
+        cache_dir = Path(self.get_cache_dir())
+        
+        # Convert model identifier to directory name
+        # e.g., 'echo840/MonkeyOCR' -> 'echo840_MonkeyOCR'
+        if '/' in model_identifier:
+            dir_name = model_identifier.replace('/', '_')
+        else:
+            dir_name = model_identifier
+            
+        model_path = cache_dir / dir_name
+        
+        if not model_path.exists():
+            logger.warning(f"Model path does not exist: {model_path}")
+            
+        return model_path
+    
+    def validate_model_paths(self) -> Dict[str, bool]:
+        """
+        Validate that all required models exist locally.
+        
+        Returns:
+            Dictionary mapping model names to availability status
+        """
+        required_models = {
+            'echo840/MonkeyOCR': 'echo840_MonkeyOCR',
+            'nanonets/Nanonets-OCR-s': 'nanonets_Nanonets-OCR-s', 
+            'numind/NuExtract-2.0-8B': 'numind_NuExtract-2.0-8B'
+        }
+        
+        cache_dir = Path(self.get_cache_dir())
+        results = {}
+        
+        for model_id, dir_name in required_models.items():
+            model_path = cache_dir / dir_name
+            results[model_id] = model_path.exists() and model_path.is_dir()
+            
+        return results
     
     def get_performance_config(self) -> Dict[str, Any]:
         """Get performance settings."""

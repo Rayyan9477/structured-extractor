@@ -1,0 +1,16 @@
+{
+  "metadata": {
+    "file_name": "Olivares.OV.04.10.2025-04.29.2025-done.pdf",
+    "file_path": "superbills/Olivares.OV.04.10.2025-04.29.2025-done.pdf",
+    "file_size": 360058,
+    "page_count": 3,
+    "processing_time": 785.6279094219208,
+    "extraction_date": "2025-07-21 05:16:19"
+  },
+  "ocr_confidence": 0.85,
+  "extraction_confidence": 0.0,
+  "overall_confidence": 0.255,
+  "structured_data": {
+    "error": "look-behind requires fixed-width pattern"
+  }
+}

@@ -1,0 +1,16 @@
+{
+  "metadata": {
+    "file_name": "RuizPerez.Hosp.06.27.2025..3 DONE.pdf",
+    "file_path": "superbills/RuizPerez.Hosp.06.27.2025..3 DONE.pdf",
+    "file_size": 664761,
+    "page_count": 7,
+    "processing_time": 669.5218160152435,
+    "extraction_date": "2025-07-21 05:27:29"
+  },
+  "ocr_confidence": 0.85,
+  "extraction_confidence": 0.0,
+  "overall_confidence": 0.255,
+  "structured_data": {
+    "error": "look-behind requires fixed-width pattern"
+  }
+}

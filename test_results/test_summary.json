@@ -1,0 +1,28 @@
+{
+  "timestamp": "2025-07-21 05:42:16",
+  "total_tests": 2,
+  "successful": 2,
+  "failed": 0,
+  "results": [
+    {
+      "file": "superbills/Olivares.OV.04.10.2025-04.29.2025-done.pdf",
+      "success": true,
+      "processing_time": 785.6359097957611,
+      "ocr_confidence": 0.85,
+      "extraction_confidence": 0.0,
+      "overall_confidence": 0.255,
+      "text_length": 2586,
+      "pages": 3
+    },
+    {
+      "file": "superbills/RuizPerez.Hosp.06.27.2025..3 DONE.pdf",
+      "success": true,
+      "processing_time": 669.528911113739,
+      "ocr_confidence": 0.85,
+      "extraction_confidence": 0.0,
+      "overall_confidence": 0.255,
+      "text_length": 6012,
+      "pages": 7
+    }
+  ]
+}

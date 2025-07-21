@@ -15,10 +15,11 @@ from src.core.config_manager import ConfigManager
 from src.core.logger import get_logger
 from src.core.data_schema import PatientData, SuperbillDocument, ExtractionResults, FieldConfidence
 from src.processors.document_processor import DocumentProcessor
-from src.processors.ocr_engine import OCREngine
+from src.processors.ocr_engine import UnifiedOCREngine
 from src.extractors.field_detector import FieldDetectionEngine, DetectionResult
 from src.extractors.nuextract_engine import NuExtractEngine
 from src.extractors.multi_patient_handler import MultiPatientHandler
+from src.extractors.mixed_patient_validator import MixedPatientValidator
 from src.validators.date_validator import DateValidator
 from src.validators.data_validator import DataValidator
 
@@ -38,10 +39,11 @@ class ExtractionPipeline:
         
         # Initialize components
         self.document_processor = DocumentProcessor(config)
-        self.ocr_engine = OCREngine(config)
+        self.ocr_engine = UnifiedOCREngine(config)  # Use new unified engine
         self.field_detector = FieldDetectionEngine(config)
         self.nuextract_engine = NuExtractEngine(config)
         self.multi_patient_handler = MultiPatientHandler(config)
+        self.mixed_patient_validator = MixedPatientValidator(config)
         self.date_validator = DateValidator(config)
         self.data_validator = DataValidator(config)
         
@@ -90,12 +92,30 @@ class ExtractionPipeline:
             
             # Step 2: OCR processing (batch for efficiency)
             ocr_results = await self.ocr_engine.extract_text_batch(images)
-
-            # Combine all page texts into one string
-            full_text = "\n\n--- PAGE BREAK ---\n\n".join([r.text for r in ocr_results])
             
-            # Step 3: Extract structured data
-            patients = await self._extract_patient_data(full_text)
+            # Step 3: Process each page independently
+            all_patients = []
+            
+            # Process each page individually
+            for page_idx, ocr_result in enumerate(ocr_results):
+                self.logger.info(f"Processing page {page_idx+1}/{len(ocr_results)}")
+                
+                # Extract patients from this page
+                page_patients = await self._extract_patient_data(
+                    ocr_result.text, 
+                    page_number=page_idx+1,
+                    total_pages=len(ocr_results)
+                )
+                
+                # Add page metadata to each patient
+                for patient in page_patients:
+                    patient.page_number = page_idx + 1
+                    patient.source_page_text = ocr_result.text[:500]  # Store truncated source text for debugging
+                
+                all_patients.extend(page_patients)
+            
+            # Deduplicate patients across pages
+            patients = await self._deduplicate_patients_across_pages(all_patients)
             
             # Step 4: Create results
             results = ExtractionResults(
@@ -107,8 +127,8 @@ class ExtractionPipeline:
                 extraction_confidence=self._calculate_overall_confidence(patients),
                 metadata={
                     'total_pages': len(images),
-                    'total_text_length': len(full_text),
-                    'processing_method': 'multi_patient_pipeline'
+                    'total_text_length': sum(len(r.text) for r in ocr_results),
+                    'processing_method': 'multi_patient_page_based_pipeline'
                 }
             )
             
@@ -160,12 +180,19 @@ class ExtractionPipeline:
             self.logger.error(f"Text extraction failed for {source_name}: {str(e)}")
             raise
     
-    async def _extract_patient_data(self, text: str) -> List[PatientData]:
+    async def _extract_patient_data(
+        self, 
+        text: str, 
+        page_number: int = 1,
+        total_pages: int = 1
+    ) -> List[PatientData]:
         """
         Extract patient data from text using multi-patient handling.
         
         Args:
             text: Input text
+            page_number: Current page number (for multi-page documents)
+            total_pages: Total number of pages
             
         Returns:
             List of patient data
@@ -206,7 +233,7 @@ class ExtractionPipeline:
         
         # Use multi-patient handler
         return await self.multi_patient_handler.process_multi_patient_document(
-            text, extract_single_patient
+            text, extract_single_patient, page_number, total_pages
         )
     
     def _enhance_with_field_detection(
@@ -544,6 +571,235 @@ class ExtractionPipeline:
         
         self.logger.info(f"Batch extraction completed. Processed {len(results)} files")
         return results
+        
+    async def _deduplicate_patients_across_pages(self, patients: List[PatientData]) -> List[PatientData]:
+        """
+        Deduplicate patients found across multiple pages.
+        
+        Args:
+            patients: List of all patients found across all pages
+            
+        Returns:
+            Deduplicated list of patients
+        """
+        if not patients or len(patients) <= 1:
+            return patients
+            
+        self.logger.info(f"Deduplicating {len(patients)} patients found across pages")
+        
+        # Group patients by similarity
+        unique_patients = []
+        duplicate_indices = set()
+        
+        for i, patient1 in enumerate(patients):
+            if i in duplicate_indices:
+                continue
+                
+            # Find potential duplicates
+            duplicates = []
+            
+            for j, patient2 in enumerate(patients):
+                if i == j or j in duplicate_indices:
+                    continue
+                    
+                # Calculate similarity based on key attributes
+                similarity = self._calculate_patient_similarity(patient1, patient2)
+                
+                # If similarity is high, consider it a duplicate
+                if similarity > 0.7:  # Threshold can be adjusted
+                    duplicates.append((j, similarity, patient2))
+                    duplicate_indices.add(j)
+            
+            # Merge duplicates (prioritize data from pages with more complete info)
+            if duplicates:
+                merged_patient = self._merge_duplicate_patients(patient1, [d[2] for d in duplicates])
+                unique_patients.append(merged_patient)
+            else:
+                unique_patients.append(patient1)
+        
+        self.logger.info(f"After deduplication: {len(unique_patients)} unique patients")
+        return unique_patients
+    
+    def _calculate_patient_similarity(self, patient1: PatientData, patient2: PatientData) -> float:
+        """
+        Calculate similarity between two patients.
+        
+        Args:
+            patient1: First patient
+            patient2: Second patient
+            
+        Returns:
+            Similarity score (0.0 to 1.0)
+        """
+        similarities = []
+        
+        # Name similarity
+        if patient1.first_name and patient2.first_name:
+            name_sim = self._calculate_string_similarity(patient1.first_name, patient2.first_name)
+            similarities.append(name_sim * 0.25)  # 25% weight
+            
+        if patient1.last_name and patient2.last_name:
+            name_sim = self._calculate_string_similarity(patient1.last_name, patient2.last_name)
+            similarities.append(name_sim * 0.25)  # 25% weight
+        
+        # DOB similarity
+        if patient1.date_of_birth and patient2.date_of_birth:
+            dob_sim = 1.0 if patient1.date_of_birth == patient2.date_of_birth else 0.0
+            similarities.append(dob_sim * 0.3)  # 30% weight
+        
+        # Patient ID similarity
+        if patient1.patient_id and patient2.patient_id:
+            id_sim = self._calculate_string_similarity(patient1.patient_id, patient2.patient_id)
+            similarities.append(id_sim * 0.2)  # 20% weight
+        
+        return sum(similarities) / max(1, len(similarities))
+    
+    def _calculate_string_similarity(self, str1: str, str2: str) -> float:
+        """Calculate string similarity using difflib."""
+        import difflib
+        return difflib.SequenceMatcher(None, str1.lower(), str2.lower()).ratio()
+    
+    def _merge_duplicate_patients(self, primary_patient: PatientData, duplicate_patients: List[PatientData]) -> PatientData:
+        """
+        Merge duplicate patients, prioritizing more complete information.
+        
+        Args:
+            primary_patient: Primary patient record
+            duplicate_patients: List of duplicate patient records
+            
+        Returns:
+            Merged patient record
+        """
+        # Start with the primary patient
+        merged = primary_patient
+        
+        # Track the most complete page
+        page_completeness = self._calculate_patient_completeness(primary_patient)
+        
+        # Initialize source_pages attribute if it doesn't exist
+        if not hasattr(merged, 'source_pages'):
+            merged.source_pages = []
+            
+        if hasattr(primary_patient, 'page_number'):
+            merged.source_pages.append(primary_patient.page_number)
+        
+        # Merge data from duplicates
+        for duplicate in duplicate_patients:
+            duplicate_completeness = self._calculate_patient_completeness(duplicate)
+            
+            # Add this page to the source pages
+            if hasattr(duplicate, 'page_number'):
+                merged.source_pages.append(duplicate.page_number)
+            
+            # Check for signs of mixed patient data before merging
+            mixed_patient_issues = self.mixed_patient_validator.validate_for_mixed_patient_data(duplicate)
+            if mixed_patient_issues:
+                self.logger.warning(f"Possible mixed patient data detected when merging patients: {mixed_patient_issues}")
+                # Flag the record as potentially containing mixed data
+                if not hasattr(merged, 'validation_warnings'):
+                    merged.validation_warnings = []
+                merged.validation_warnings.extend(mixed_patient_issues)
+                # Continue with merging but with caution
+            
+            # If the duplicate has more complete data, prefer it
+            if duplicate_completeness > page_completeness:
+                # Keep only non-empty fields from the primary record
+                self._merge_non_empty_fields(merged, duplicate)
+                page_completeness = duplicate_completeness
+            else:
+                # Only copy fields that are empty in the primary record
+                self._copy_missing_fields(merged, duplicate)
+                
+            # Always merge lists (like CPT codes, ICD codes, etc.)
+            self._merge_list_fields(merged, duplicate)
+        
+        return merged
+    
+    def _calculate_patient_completeness(self, patient: PatientData) -> float:
+        """Calculate completeness score for a patient record."""
+        total_fields = 0
+        filled_fields = 0
+        
+        # Count basic fields
+        for field in ['first_name', 'last_name', 'date_of_birth', 'gender', 
+                      'address', 'phone', 'email', 'patient_id']:
+            total_fields += 1
+            if hasattr(patient, field) and getattr(patient, field, None):
+                filled_fields += 1
+        
+        # Count code lists
+        for list_field in ['cpt_codes', 'icd10_codes']:
+            total_fields += 1
+            if hasattr(patient, list_field) and getattr(patient, list_field, None):
+                filled_fields += 1
+        
+        # Count nested objects
+        for nested_field in ['service_info', 'financial_info', 'provider_info']:
+            if hasattr(patient, nested_field) and getattr(patient, nested_field, None):
+                nested_obj = getattr(patient, nested_field)
+                for attr in dir(nested_obj):
+                    if not attr.startswith('_') and not callable(getattr(nested_obj, attr)):
+                        total_fields += 1
+                        if getattr(nested_obj, attr, None):
+                            filled_fields += 1
+        
+        return filled_fields / max(1, total_fields)
+    
+    def _merge_non_empty_fields(self, target: PatientData, source: PatientData) -> None:
+        """Copy all non-empty fields from source to target."""
+        # Skip special fields and lists
+        skip_fields = ['page_number', 'source_pages', 'source_page_text', 
+                       'cpt_codes', 'icd10_codes', 'validation_errors']
+        
+        for attr in dir(source):
+            if attr.startswith('_') or callable(getattr(source, attr)) or attr in skip_fields:
+                continue
+                
+            source_value = getattr(source, attr, None)
+            if source_value:
+                setattr(target, attr, source_value)
+    
+    def _copy_missing_fields(self, target: PatientData, source: PatientData) -> None:
+        """Copy fields from source to target only if target's field is empty."""
+        # Skip special fields and lists
+        skip_fields = ['page_number', 'source_pages', 'source_page_text', 
+                       'cpt_codes', 'icd10_codes', 'validation_errors']
+        
+        for attr in dir(source):
+            if attr.startswith('_') or callable(getattr(source, attr)) or attr in skip_fields:
+                continue
+                
+            target_value = getattr(target, attr, None)
+            source_value = getattr(source, attr, None)
+            
+            if not target_value and source_value:
+                setattr(target, attr, source_value)
+    
+    def _merge_list_fields(self, target: PatientData, source: PatientData) -> None:
+        """Merge list fields like CPT codes and ICD codes."""
+        # Handle CPT codes
+        if hasattr(source, 'cpt_codes') and source.cpt_codes:
+            if not hasattr(target, 'cpt_codes') or not target.cpt_codes:
+                target.cpt_codes = []
+                
+            # Add non-duplicate codes
+            existing_codes = {code.code for code in target.cpt_codes}
+            for code in source.cpt_codes:
+                if code.code not in existing_codes:
+                    target.cpt_codes.append(code)
+                    existing_codes.add(code.code)
+        
+        # Handle ICD10 codes
+        if hasattr(source, 'icd10_codes') and source.icd10_codes:
+            if not hasattr(target, 'icd10_codes') or not target.icd10_codes:
+                target.icd10_codes = []
+                
+            # Add non-duplicate codes
+            existing_codes = {code.code for code in target.icd10_codes}
+            for code in source.icd10_codes:
+                if code.code not in existing_codes:
+                    target.icd10_codes.append(code)
+                    existing_codes.add(code.code)
 
 
 class ExtractionEngine:
