@@ -107,21 +107,74 @@ class UnifiedExtractionSystem:
             if not images:
                 raise ValueError(f"No images extracted from {file_path}")
             
-            # Extract text using OCR ensemble
+            # Extract text using OCR ensemble for each page
             ocr_results = await self.ocr_engine.extract_text_batch(images)
             
-            # Combine all page texts
-            full_text = "\n\n--- PAGE BREAK ---\n\n".join([r.text for r in ocr_results])
+            # Store page texts separately for multi-page processing
+            page_texts = [r.text for r in ocr_results]
+            
+            # Process as multi-page document if more than one page
+            if len(page_texts) > 1:
+                self.logger.info(f"Processing as multi-page document with {len(page_texts)} pages")
+                
+                # Import needed components
+                from src.extractors.multi_patient_handler import MultiPatientHandler
+                from src.extractors.nuextract_engine import NuExtractEngine
+                
+                # Initialize handlers
+                multi_patient_handler = MultiPatientHandler(self.config)
+                structured_extractor_engine = NuExtractEngine(self.config)
+                
+                # Ensure extractor is loaded
+                if not hasattr(structured_extractor_engine, 'model') or structured_extractor_engine.model is None:
+                    await structured_extractor_engine.load_model()
+                
+                # Create extraction function
+                async def extract_patient_data(text, patient_index):
+                    return await structured_extractor_engine.extract_patient_data(text, patient_index)
+                
+                # Process multi-page document with patient detection across pages
+                patient_data_list = await multi_patient_handler.process_multi_page_document(
+                    page_texts, 
+                    extract_patient_data
+                )
+                
+                # Convert to structured data format
+                structured_data = {
+                    "patients": [patient.to_dict() for patient in patient_data_list],
+                    "meta": {
+                        "page_count": len(page_texts),
+                        "patient_count": len(patient_data_list)
+                    }
+                }
+                
+                # Calculate extraction confidence from patient data
+                extraction_confidence = sum(p.extraction_confidence for p in patient_data_list) / len(patient_data_list) if patient_data_list else 0.5
+                
+                # Create structured data result
+                structured_data_result = StructuredData(
+                    data=structured_data,
+                    confidence=extraction_confidence,
+                    model_name=structured_extractor_engine.model_name
+                )
+                
+            else:
+                # For single page documents, use the standard extraction
+                # Combine all page texts (though there's just one)
+                full_text = "\n\n".join(page_texts)
+                
+                # Extract structured data using template
+                template = template_name or self.default_template
+                structured_data_result = await self.structured_extractor.extract_structured_data(
+                    full_text, 
+                    template_name=template
+                )
+            
+            # Combine all page texts for output
+            full_text = "\n\n--- PAGE BREAK ---\n\n".join(page_texts)
             
             # Calculate average OCR confidence
             ocr_confidence = sum(r.confidence for r in ocr_results) / len(ocr_results)
-            
-            # Extract structured data using template
-            template = template_name or self.default_template
-            structured_data = await self.structured_extractor.extract_structured_data(
-                full_text, 
-                template_name=template
-            )
             
             # Create document metadata
             file_name = os.path.basename(file_path)
@@ -141,10 +194,10 @@ class UnifiedExtractionSystem:
             results = ExtractionResults(
                 metadata=metadata,
                 text=full_text,
-                structured_data=structured_data.data,
+                structured_data=structured_data_result.data,
                 ocr_confidence=ocr_confidence,
-                extraction_confidence=structured_data.confidence,
-                overall_confidence=self._calculate_overall_confidence(ocr_confidence, structured_data.confidence)
+                extraction_confidence=structured_data_result.confidence,
+                overall_confidence=self._calculate_overall_confidence(ocr_confidence, structured_data_result.confidence)
             )
             
             # Export results if output path is provided

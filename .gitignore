@@ -168,3 +168,4 @@ extracted_*.csv
 .github\copilot-instructions.md
 
 *.safetensors
+*.cursor

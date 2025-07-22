@@ -4,9 +4,9 @@ Data Schema for Structured Extraction System
 Defines data structures and types for the extraction system.
 """
 
+from __future__ import annotations  # Enable forward references
 from dataclasses import dataclass, field
-from typing import Dict, Any, List, Optional, Union
-from datetime import date
+from typing import Dict, Any, List, Optional, Union, Tuple
 from enum import Enum
 
 
@@ -30,6 +30,42 @@ class PHIItem:
     value: str
     confidence: float
     position: Optional[tuple] = None
+
+
+@dataclass
+class CPTCode:
+    """
+    CPT (Current Procedural Terminology) code with metadata.
+    
+    Attributes:
+        code: The 5-digit CPT code
+        description: Optional description of the procedure
+        charge: Optional cost/charge amount
+        units: Number of times procedure was performed
+        date: Optional date when procedure was performed, as string to avoid circular refs
+        confidence: Confidence score of the extraction (0.0 to 1.0)
+    """
+    code: str
+    description: Optional[str] = None
+    charge: Optional[float] = None
+    units: int = 1
+    date: Optional[str] = None
+    confidence: float = 0.0
+
+
+@dataclass
+class ICD10Code:
+    """
+    ICD-10 diagnosis code with metadata.
+    
+    Attributes:
+        code: The ICD-10 code (letter + numbers + optional decimal portion)
+        description: Optional description of the diagnosis
+        confidence: Confidence score of the extraction (0.0 to 1.0)
+    """
+    code: str
+    description: Optional[str] = None
+    confidence: float = 0.0
 
 
 @dataclass
@@ -82,28 +118,92 @@ class ExtractionResults:
     file_path: str = ""
     extraction_timestamp: Optional[str] = None
     total_patients: int = 0
-    patients: List[Any] = field(default_factory=list)  # Will be List[PatientData] but avoiding circular reference
+    # Use string literal for forward reference to avoid circular dependency
+    patients: List['PatientData'] = field(default_factory=list)
     error_message: Optional[str] = None
 
 
 @dataclass
+class ICD10Code:
+    """ICD-10 diagnosis code."""
+    code: str
+    description: Optional[str] = None
+    confidence: float = 0.0
+
+
+@dataclass
 class PatientData:
-    """Patient information."""
-    id: str
+    """Patient information with multi-page support."""
     first_name: Optional[str] = None
     last_name: Optional[str] = None
-    date_of_birth: Optional[str] = None
+    middle_name: Optional[str] = None
+    date_of_birth: Optional[str] = None  # Use ISO format YYYY-MM-DD
+    patient_id: Optional[str] = None
     gender: Optional[str] = None
     address: Optional[str] = None
     phone: Optional[str] = None
     email: Optional[str] = None
     insurance_id: Optional[str] = None
-    # Page-related fields for multi-page processing
-    page_number: Optional[int] = None  # The page where this patient was found
-    source_pages: List[int] = field(default_factory=list)  # All pages that contain this patient's data
-    source_page_text: Optional[str] = None  # Truncated source text for debugging
     insurance_provider: Optional[str] = None
+    
+    # CPT and ICD codes
+    cpt_codes: List[CPTCode] = field(default_factory=list)
+    icd10_codes: List[ICD10Code] = field(default_factory=list)
+    
+    # Page-related fields for multi-page processing
+    page_number: int = 0  # The primary page where this patient was found
+    total_pages: int = 0  # Total number of pages in the document
+    spans_multiple_pages: bool = False  # Whether this patient data spans multiple pages
+    page_numbers: List[int] = field(default_factory=list)  # All pages containing this patient's data
+    text_segment: Optional[str] = None  # Source text segment for this patient
+    
+    # Processing metadata
+    extraction_confidence: float = 0.0
+    patient_index: int = 0  # Index in the original patient list
+    validation_errors: List[str] = field(default_factory=list)
     confidences: Dict[str, FieldConfidence] = field(default_factory=dict)
+    
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert to dictionary for serialization."""
+        result = {
+            "first_name": self.first_name,
+            "last_name": self.last_name,
+            "middle_name": self.middle_name,
+            "date_of_birth": str(self.date_of_birth) if self.date_of_birth else None,
+            "patient_id": self.patient_id,
+            "gender": self.gender,
+            "address": self.address,
+            "phone": self.phone,
+            "email": self.email,
+            "insurance_id": self.insurance_id,
+            "insurance_provider": self.insurance_provider,
+            "cpt_codes": [{"code": code.code, "description": code.description, "charge": code.charge} 
+                         for code in self.cpt_codes] if self.cpt_codes else [],
+            "icd10_codes": [{"code": code.code, "description": code.description} 
+                         for code in self.icd10_codes] if self.icd10_codes else [],
+            "extraction_confidence": self.extraction_confidence,
+            "page_number": self.page_number,
+            "total_pages": self.total_pages,
+        }
+        
+        # Add multi-page information if present
+        if self.spans_multiple_pages:
+            result["spans_multiple_pages"] = True
+            result["page_numbers"] = self.page_numbers
+            
+        if self.validation_errors:
+            result["validation_errors"] = self.validation_errors
+            
+        # Add field-level confidence scores if available
+        if self.confidences:
+            result["field_confidences"] = {
+                field: {
+                    "score": conf.score,
+                    "model": conf.model_name if conf.model_name else "default"
+                } for field, conf in self.confidences.items()
+            }
+            
+        return result
 
 
 @dataclass
@@ -130,7 +230,7 @@ class ServiceInfo:
     """Medical service information."""
     cpt_codes: List[CPTCode] = field(default_factory=list)
     icd10_codes: List[ICD10Code] = field(default_factory=list)
-    service_date: Optional[date] = None
+    service_date: Optional[str] = None  # Use ISO format YYYY-MM-DD
     total_charge: Optional[float] = None
     provider_name: Optional[str] = None
     facility_name: Optional[str] = None
@@ -186,5 +286,5 @@ class SuperbillDocument:
     services: List[ServiceInfo] = field(default_factory=list)
     provider: Optional[ProviderInfo] = None
     financial: Optional[FinancialInfo] = None
-    document_date: Optional[date] = None
+    document_date: Optional[str] = None  # ISO format YYYY-MM-DD
     confidence: float = 0.0

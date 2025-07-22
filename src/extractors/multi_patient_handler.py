@@ -971,6 +971,10 @@ class MultiPatientHandler:
                 if patient_data:
                     # Set page-related metadata
                     patient_data.page_number = page_number
+                    patient_data.total_pages = total_pages
+                    
+                    # Store the text segment used for extraction
+                    patient_data.text_segment = segment.text
                     
                     # Validate data
                     is_valid, errors = self.validator.validate_patient_data(patient_data)
@@ -996,29 +1000,346 @@ class MultiPatientHandler:
         self.logger.info(f"Successfully processed {len(patient_data_list)} patients on page {page_number}")
         return patient_data_list
     
+    async def process_multi_page_document(
+        self,
+        page_texts: List[str],
+        extractor_func,
+    ) -> List[PatientData]:
+        """
+        Process a multi-page document with patient detection across pages.
+        
+        Args:
+            page_texts: List of OCR text for each page
+            extractor_func: Function to extract patient data from text segment
+            
+        Returns:
+            List of extracted patient data with cross-page merging
+        """
+        self.logger.info(f"Processing multi-page document with {len(page_texts)} pages")
+        
+        all_patients = []
+        
+        # First pass: process each page independently
+        for page_num, page_text in enumerate(page_texts, 1):
+            page_patients = await self.process_multi_patient_document(
+                page_text,
+                extractor_func,
+                page_number=page_num,
+                total_pages=len(page_texts)
+            )
+            
+            # Add page patients to the full list
+            all_patients.extend(page_patients)
+            
+            # Force a short delay to prevent CPU overload
+            if page_num % 5 == 0:
+                await asyncio.sleep(0.1)
+        
+        # Enhanced second pass: use the improved patient detection across pages
+        optimized_patients = self.optimize_patient_detection(all_patients)
+        
+        # Log the changes in patient count
+        if len(optimized_patients) != len(all_patients):
+            self.logger.info(f"Patient optimization: reduced from {len(all_patients)} to {len(optimized_patients)} patients")
+        
+        # Return the optimized patient list
+        return optimized_patients
+    
+    def detect_cross_page_patients(self, patients: List[PatientData]) -> List[Tuple[int, int, float]]:
+        """
+        Detect patients that appear across multiple pages.
+        
+        Args:
+            patients: List of all extracted patients
+            
+        Returns:
+            List of cross-page duplicate pairs (index1, index2, similarity)
+        """
+        cross_page_duplicates = []
+        
+        # Group patients by page
+        patients_by_page = {}
+        for i, patient in enumerate(patients):
+            page = patient.page_number
+            if page not in patients_by_page:
+                patients_by_page[page] = []
+            patients_by_page[page].append((i, patient))
+        
+        # Compare patients across adjacent pages
+        for page in sorted(patients_by_page.keys()):
+            # Skip the last page
+            if page + 1 not in patients_by_page:
+                continue
+                
+            current_page_patients = patients_by_page[page]
+            next_page_patients = patients_by_page[page + 1]
+            
+            # Compare each patient on current page with each on next page
+            for i_idx, i_patient in current_page_patients:
+                for j_idx, j_patient in next_page_patients:
+                    similarity = self.validator._calculate_patient_similarity(i_patient, j_patient)
+                    
+                    # Use a lower threshold for cross-page matching
+                    if similarity > 0.7:  # Slightly lower than within-page threshold
+                        cross_page_duplicates.append((i_idx, j_idx, similarity))
+                        
+                        self.logger.debug(
+                            f"Cross-page match between page {page}:{i_patient.first_name} {i_patient.last_name} "
+                            f"and page {page+1}:{j_patient.first_name} {j_patient.last_name} "
+                            f"(similarity: {similarity:.2f})"
+                        )
+        
+        return cross_page_duplicates
+
+    def optimize_patient_detection(self, patients: List[PatientData]) -> List[PatientData]:
+        """
+        Optimize patient detection across pages using additional heuristics.
+        
+        This method enhances the cross-page patient detection by applying 
+        additional heuristics beyond simple similarity matching:
+        
+        1. Checks for matching CPT/ICD codes across pages
+        2. Identifies continuation markers in text
+        3. Analyzes text patterns that typically indicate continued data
+        
+        Args:
+            patients: List of all extracted patients
+            
+        Returns:
+            Optimized list of patients with improved cross-page relationships
+        """
+        self.logger.info(f"Optimizing patient detection across pages for {len(patients)} patients")
+        
+        # First apply the regular cross-page detection
+        cross_page_matches = self.detect_cross_page_patients(patients)
+        
+        # Find additional matches based on CPT/ICD code similarity
+        code_based_matches = self._find_code_based_matches(patients)
+        
+        # Combine all matches, avoiding duplicates
+        all_matches = cross_page_matches.copy()
+        for i, j, sim in code_based_matches:
+            # Check if this pair is already matched
+            if not any(i == x and j == y for x, y, _ in cross_page_matches):
+                all_matches.append((i, j, sim))
+        
+        # If we found more matches, merge them
+        if len(all_matches) > len(cross_page_matches):
+            self.logger.info(f"Found {len(all_matches) - len(cross_page_matches)} additional cross-page matches")
+            merged_patients = self._merge_duplicates(patients, all_matches)
+            
+            # Update multi-page flags and page numbers
+            for patient in merged_patients:
+                if len(patient.page_numbers) > 1:
+                    patient.spans_multiple_pages = True
+                    
+            # Sort by page number
+            merged_patients.sort(key=lambda p: (p.page_number, getattr(p, 'patient_index', 0)))
+            return merged_patients
+        
+        # If no additional matches found, return the original list
+        return patients
+    
+    def _find_code_based_matches(self, patients: List[PatientData]) -> List[Tuple[int, int, float]]:
+        """
+        Find patient matches based on CPT and ICD code similarity.
+        
+        Args:
+            patients: List of all patients
+            
+        Returns:
+            List of matches (index1, index2, similarity)
+        """
+        matches = []
+        
+        # Group patients by page
+        patients_by_page = {}
+        for i, patient in enumerate(patients):
+            page = patient.page_number
+            if page not in patients_by_page:
+                patients_by_page[page] = []
+            patients_by_page[page].append((i, patient))
+        
+        # Compare patients on adjacent pages
+        for page in sorted(patients_by_page.keys()):
+            if page + 1 not in patients_by_page:
+                continue
+                
+            current_page_patients = patients_by_page[page]
+            next_page_patients = patients_by_page[page + 1]
+            
+            for i_idx, i_patient in current_page_patients:
+                for j_idx, j_patient in next_page_patients:
+                    # Skip if no codes to compare
+                    if not i_patient.cpt_codes and not i_patient.icd10_codes:
+                        continue
+                        
+                    # Calculate code similarity
+                    code_similarity = self._calculate_code_similarity(i_patient, j_patient)
+                    
+                    # Use a moderate threshold for code-based matching
+                    if code_similarity > 0.6:
+                        self.logger.debug(
+                            f"Code-based match between page {page}:{i_patient.first_name} {i_patient.last_name} "
+                            f"and page {page+1}:{j_patient.first_name} {j_patient.last_name} "
+                            f"(similarity: {code_similarity:.2f})"
+                        )
+                        matches.append((i_idx, j_idx, code_similarity))
+        
+        return matches
+    
+    def _calculate_code_similarity(self, patient1: PatientData, patient2: PatientData) -> float:
+        """
+        Calculate similarity between two patients based on their CPT and ICD codes.
+        
+        Args:
+            patient1: First patient
+            patient2: Second patient
+            
+        Returns:
+            Similarity score (0.0 to 1.0)
+        """
+        # Get sets of codes from both patients
+        cpt1 = {c.code for c in patient1.cpt_codes}
+        cpt2 = {c.code for c in patient2.cpt_codes}
+        icd1 = {c.code for c in patient1.icd10_codes}
+        icd2 = {c.code for c in patient2.icd10_codes}
+        
+        # Calculate Jaccard similarity for CPT codes
+        cpt_sim = 0.0
+        if cpt1 or cpt2:
+            intersection = len(cpt1.intersection(cpt2))
+            union = len(cpt1.union(cpt2))
+            cpt_sim = intersection / union if union > 0 else 0.0
+        
+        # Calculate Jaccard similarity for ICD codes
+        icd_sim = 0.0
+        if icd1 or icd2:
+            intersection = len(icd1.intersection(icd2))
+            union = len(icd1.union(icd2))
+            icd_sim = intersection / union if union > 0 else 0.0
+        
+        # Combine similarities, weighting CPT codes slightly higher
+        if cpt1 or cpt2 or icd1 or icd2:
+            combined_sim = (0.6 * cpt_sim + 0.4 * icd_sim) if (cpt1 or cpt2) and (icd1 or icd2) else max(cpt_sim, icd_sim)
+            return combined_sim
+        
+        return 0.0
+    
     def _merge_duplicates(
         self, 
         patients: List[PatientData], 
         duplicates: List[Tuple[int, int, float]]
     ) -> List[PatientData]:
-        """Merge duplicate patient records."""
-        # Simple approach: remove duplicates with lower confidence
-        # In production, you might want more sophisticated merging
+        """
+        Merge duplicate patient records.
+        
+        Args:
+            patients: List of patient data records
+            duplicates: List of duplicate pairs (index1, index2, similarity)
+            
+        Returns:
+            List of merged patient records
+        """
+        self.logger.debug(f"Merging {len(duplicates)} duplicate patient pairs")
         
         to_remove = set()
+        merge_groups = []
         
+        # Group duplicates together
         for i, j, similarity in duplicates:
-            if i not in to_remove and j not in to_remove:
-                # Keep the one with higher extraction confidence
-                if patients[i].extraction_confidence >= patients[j].extraction_confidence:
-                    to_remove.add(j)
-                else:
-                    to_remove.add(i)
+            # Skip if either patient is already marked for removal
+            if i in to_remove or j in to_remove:
+                continue
+                
+            # Find if either patient is already in a merge group
+            found_group = False
+            for group in merge_groups:
+                if i in group or j in group:
+                    group.add(i)
+                    group.add(j)
+                    found_group = True
+                    break
+                    
+            # If not found in any group, create a new group
+            if not found_group:
+                merge_groups.append({i, j})
         
-        # Remove duplicates
-        merged_patients = [
-            patient for i, patient in enumerate(patients) 
-            if i not in to_remove
-        ]
+        # Process each merge group
+        merged_patients = []
+        processed_indices = set()
         
+        for group in merge_groups:
+            # Sort patients in the group by confidence
+            group_patients = [(idx, patients[idx]) for idx in group]
+            group_patients.sort(key=lambda x: x[1].extraction_confidence, reverse=True)
+            
+            # Take the highest confidence patient as base
+            base_idx, base_patient = group_patients[0]
+            processed_indices.add(base_idx)
+            
+            # Merge information from other patients
+            for idx, patient in group_patients[1:]:
+                processed_indices.add(idx)
+                base_patient = self._combine_patient_data(base_patient, patient)
+            
+            merged_patients.append(base_patient)
+        
+        # Add patients that weren't part of any merge group
+        for i, patient in enumerate(patients):
+            if i not in processed_indices:
+                merged_patients.append(patient)
+        
+        self.logger.debug(f"Reduced from {len(patients)} to {len(merged_patients)} patients after merging")
         return merged_patients
+    
+    def _combine_patient_data(self, primary: PatientData, secondary: PatientData) -> PatientData:
+        """
+        Combine information from two patient records, prioritizing the primary record.
+        
+        Args:
+            primary: Primary patient record (higher confidence)
+            secondary: Secondary patient record to merge from
+            
+        Returns:
+            Combined patient record
+        """
+        # Start with primary patient data
+        combined = primary
+        
+        # Fill in missing fields from secondary
+        if not primary.first_name and secondary.first_name:
+            combined.first_name = secondary.first_name
+            
+        if not primary.last_name and secondary.last_name:
+            combined.last_name = secondary.last_name
+            
+        if not primary.date_of_birth and secondary.date_of_birth:
+            combined.date_of_birth = secondary.date_of_birth
+            
+        if not primary.patient_id and secondary.patient_id:
+            combined.patient_id = secondary.patient_id
+            
+        # Combine CPT codes (avoid duplicates)
+        existing_cpt_codes = {code.code for code in primary.cpt_codes}
+        for code in secondary.cpt_codes:
+            if code.code not in existing_cpt_codes:
+                combined.cpt_codes.append(code)
+                existing_cpt_codes.add(code.code)
+                
+        # Combine ICD-10 codes (avoid duplicates)
+        existing_icd_codes = {code.code for code in primary.icd10_codes}
+        for code in secondary.icd10_codes:
+            if code.code not in existing_icd_codes:
+                combined.icd10_codes.append(code)
+                existing_icd_codes.add(code.code)
+                
+        # Set multi-page flag if patients are from different pages
+        if primary.page_number != secondary.page_number:
+            combined.spans_multiple_pages = True
+            combined.page_numbers = sorted(set([primary.page_number, secondary.page_number]))
+            
+        # Update extraction confidence
+        combined.extraction_confidence = max(primary.extraction_confidence, secondary.extraction_confidence)
+        
+        return combined

@@ -22,6 +22,7 @@ from pdf2image import convert_from_path, convert_from_bytes
 
 from src.core.config_manager import ConfigManager
 from src.core.logger import get_logger
+from src.processors.document_chunker import DocumentChunker
 
 
 class ImagePreprocessor:
@@ -447,6 +448,7 @@ class DocumentProcessor:
         # Initialize sub-processors
         self.preprocessor = ImagePreprocessor(config)
         self.segmenter = PageSegmenter(config)
+        self.chunker = DocumentChunker(config)
         
         # Get PDF processing settings
         self.pdf_settings = config.get("document_processing.pdf", {})
@@ -454,6 +456,7 @@ class DocumentProcessor:
         self.format = self.pdf_settings.get("format", "RGB")
         self.first_page = self.pdf_settings.get("first_page")
         self.last_page = self.pdf_settings.get("last_page")
+        self.page_batch_size = self.pdf_settings.get("page_batch_size", 3)
     
     async def process_pdf(self, pdf_path: str) -> List[Dict[str, Any]]:
         """
@@ -660,19 +663,37 @@ class DocumentProcessor:
             # Open PDF document
             doc = fitz.open(pdf_path)
             
+            # Get total page count for better tracking
+            total_pages = doc.page_count
+            self.logger.info(f"PDF contains {total_pages} pages")
+            
             # Determine page range
             start_page = (self.first_page - 1) if self.first_page else 0
-            end_page = self.last_page if self.last_page else doc.page_count
+            end_page = self.last_page if self.last_page else total_pages
             
             processed_images = []
             
+            # Calculate optimal batch size based on page count
+            # Use smaller batches for larger documents
+            adaptive_batch_size = max(1, min(self.page_batch_size, 10 if total_pages < 20 else 5))
+            self.logger.debug(f"Using adaptive batch size of {adaptive_batch_size} for processing")
+            
             # Process pages one by one to conserve memory
-            for page_num in range(start_page, min(end_page, doc.page_count)):
-                self.logger.debug(f"Processing PDF page {page_num + 1}")
+            for page_num in range(start_page, min(end_page, total_pages)):
+                self.logger.debug(f"Processing PDF page {page_num + 1}/{total_pages}")
                 
                 # Extract image from PDF page
                 page = doc[page_num]
-                mat = fitz.Matrix(self.dpi / 72, self.dpi / 72)
+                
+                # Calculate optimal DPI based on page size
+                # Use lower DPI for very large pages to prevent memory issues
+                page_width, page_height = page.rect.width, page.rect.height
+                adaptive_dpi = self.dpi
+                if page_width * page_height > 1000000:  # Very large page
+                    adaptive_dpi = int(self.dpi * 0.75)  # Reduce DPI by 25%
+                    self.logger.debug(f"Using reduced DPI ({adaptive_dpi}) for large page")
+                
+                mat = fitz.Matrix(adaptive_dpi / 72, adaptive_dpi / 72)
                 pix = page.get_pixmap(matrix=mat)
                 
                 # Convert to PIL Image
@@ -682,8 +703,17 @@ class DocumentProcessor:
                 if image.mode != 'RGB':
                     image = image.convert('RGB')
                 
+                # Store original page number as metadata
+                image.page_number = page_num + 1
+                image.total_pages = total_pages
+                
                 # Preprocess image
                 preprocessed = self.preprocessor.preprocess_image(image)
+                
+                # Transfer metadata to preprocessed image
+                preprocessed.page_number = image.page_number
+                preprocessed.total_pages = image.total_pages
+                
                 processed_images.append(preprocessed)
                 
                 # Clean up to free memory
@@ -691,14 +721,16 @@ class DocumentProcessor:
                 pix = None
                 page = None
                 
-                # Force garbage collection after each page
-                if page_num % 5 == 0:  # Every 5 pages
+                # Force garbage collection periodically
+                if (page_num - start_page + 1) % adaptive_batch_size == 0:
+                    self.logger.debug(f"Running garbage collection after batch")
                     gc.collect()
             
             # Clean up
             doc.close()
             gc.collect()
             
+            self.logger.info(f"Successfully processed {len(processed_images)} pages with memory optimization")
             return processed_images
             
         except Exception as e:
@@ -706,7 +738,20 @@ class DocumentProcessor:
             
             # Fallback to regular method
             self.logger.warning("Falling back to standard PDF processing")
-            images = await self._pdf_to_images(pdf_path)
-            processed_images = [self.preprocessor.preprocess_image(img) for img in images]
-            
-            return processed_images
+            try:
+                images = await self._pdf_to_images(pdf_path)
+                processed_images = []
+                
+                # Add page metadata to each image
+                for i, img in enumerate(images):
+                    img.page_number = i + 1
+                    img.total_pages = len(images)
+                    processed = self.preprocessor.preprocess_image(img)
+                    processed.page_number = img.page_number
+                    processed.total_pages = img.total_pages
+                    processed_images.append(processed)
+                
+                return processed_images
+            except Exception as fallback_error:
+                self.logger.error(f"Fallback processing also failed: {fallback_error}")
+                raise
