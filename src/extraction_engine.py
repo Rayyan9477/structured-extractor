@@ -88,10 +88,33 @@ class ExtractionPipeline:
             images = await self.document_processor.process_document(file_path)
             
             if not images:
-                raise ValueError(f"No images extracted from {file_path}")
+                raise ValueError("No images could be extracted from the document")
             
-            # Step 2: OCR processing (batch for efficiency)
-            ocr_results = await self.ocr_engine.extract_text_batch(images)
+            # Step 2: Extract text using OCR with fallback to NuExtract if OCR fails
+            ocr_results = []
+            try:
+                for img in images:
+                    result = await self.ocr_engine.extract_text(img)
+                    ocr_results.append(result)
+                
+                if not any(r.text.strip() for r in ocr_results):
+                    self.logger.warning("No text extracted by OCR, falling back to NuExtract")
+                    raise ValueError("No text extracted by OCR")
+                    
+            except Exception as ocr_error:
+                self.logger.warning(f"OCR extraction failed: {ocr_error}. Falling back to NuExtract...")
+                # Fall back to NuExtract for direct image processing
+                ocr_results = []
+                for img in images:
+                    # Convert PIL Image to bytes for NuExtract
+                    import io
+                    img_byte_arr = io.BytesIO()
+                    img.save(img_byte_arr, format='PNG')
+                    img_byte_arr = img_byte_arr.getvalue()
+                    
+                    # Use NuExtract for text extraction
+                    extracted = await self.nuextract_engine.extract_from_image(img_byte_arr)
+                    ocr_results.append(extracted)
             
             # Step 3: Process each page independently
             all_patients = []

@@ -94,7 +94,14 @@ class ResourceManager:
                 except Exception as e:
                     self.logger.error(f"Error in resource monitoring: {e}")
         
-        asyncio.create_task(monitor_resources())
+        try:
+            # Try to create the task if there's a running event loop
+            loop = asyncio.get_running_loop()
+            loop.create_task(monitor_resources())
+        except RuntimeError:
+            # No running event loop, skip monitoring for now
+            self.logger.warning("No running event loop, skipping resource monitoring")
+            pass
     
     async def _check_memory_usage(self):
         """Monitor system memory usage and take action if needed."""

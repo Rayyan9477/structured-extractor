@@ -94,13 +94,25 @@ class NuExtractEngine:
                 use_fast=True
             )
             
-            # Load the model for Vision2Seq tasks
-            self.model = AutoModelForVision2Seq.from_pretrained(
-                str(model_path),
-                torch_dtype=torch.bfloat16 if torch.cuda.is_available() else torch.float32,
-                device_map="auto" if torch.cuda.is_available() else None,
-                trust_remote_code=True
-            )
+            # Load the model for Vision2Seq tasks with better error handling
+            try:
+                self.model = AutoModelForVision2Seq.from_pretrained(
+                    str(model_path),
+                    torch_dtype=torch.bfloat16 if torch.cuda.is_available() else torch.float32,
+                    device_map="auto" if torch.cuda.is_available() else None,
+                    trust_remote_code=True,
+                    low_cpu_mem_usage=True
+                )
+            except Exception as model_error:
+                self.logger.warning(f"Failed to load as Vision2Seq model: {model_error}")
+                # Fallback to CausalLM for text-only processing
+                self.model = AutoModelForCausalLM.from_pretrained(
+                    str(model_path),
+                    torch_dtype=torch.bfloat16 if torch.cuda.is_available() else torch.float32,
+                    device_map="auto" if torch.cuda.is_available() else None,
+                    trust_remote_code=True,
+                    low_cpu_mem_usage=True
+                )
             
             if not torch.cuda.is_available():
                 self.model.to(self.device)
@@ -505,16 +517,116 @@ Extracted JSON:"""
         
         return validated_data
     
-    async def extract_patient_data(self, text: str, patient_index: int = 0) -> Optional[PatientData]:
+    async def extract_from_image(self, image_bytes: bytes) -> Dict[str, Any]:
         """
-        Extract patient data and convert to PatientData model.
+        Extract text and structure from an image using NuExtract.
         
         Args:
-            text: Input text containing patient information
-            patient_index: Index of patient in multi-patient document
+            image_bytes: Image bytes to process
             
         Returns:
-            PatientData object or None if extraction failed
+            Dictionary with 'text' and 'confidence' keys
+        """
+        try:
+            if self.model is None:
+                await self.load_model()
+                
+            from PIL import Image
+            import io
+            
+            # Convert bytes to PIL Image
+            image = Image.open(io.BytesIO(image_bytes))
+            
+            # Prepare the prompt for text extraction
+            prompt = "Extract all text from this document, including tables and structured data. Return the raw text with line breaks preserved."
+            
+            # Prepare messages for the Vision2Seq model
+            messages = [
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "image",
+                            "image": image
+                        },
+                        {
+                            "type": "text",
+                            "text": prompt
+                        }
+                    ],
+                }
+            ]
+            
+            # Apply chat template
+            text = self.processor.apply_chat_template(
+                messages, tokenize=False, add_generation_prompt=True
+            )
+            
+            # Process inputs
+            inputs = self.processor(
+                text=[text],
+                images=[image],
+                padding=True,
+                return_tensors="pt",
+            )
+            
+            # Move to device
+            inputs = inputs.to(self.model.device)
+            
+            # Generate output with optimized parameters
+            with torch.no_grad():
+                generated_ids = self.model.generate(
+                    **inputs,
+                    do_sample=False,
+                    num_beams=1,
+                    max_new_tokens=2048,
+                    temperature=0.1,
+                    top_p=0.9,
+                    eos_token_id=self.processor.tokenizer.eos_token_id,
+                    pad_token_id=self.processor.tokenizer.eos_token_id,
+                )
+            
+            # Decode output - extract only the generated part
+            generated_ids_trimmed = [
+                out_ids[len(in_ids):] for in_ids, out_ids in zip(inputs.input_ids, generated_ids)
+            ]
+            
+            extracted_text = self.processor.batch_decode(
+                generated_ids_trimmed, skip_special_tokens=True, clean_up_tokenization_spaces=False
+            )[0]
+            
+            # Clean up the extracted text
+            extracted_text = extracted_text.strip()
+            if extracted_text:
+                extracted_text = '\n'.join(line.strip() for line in extracted_text.split('\n') if line.strip())
+            
+            # Create OCRResult-like structure for compatibility
+            result = type('OCRResult', (), {
+                'text': extracted_text,
+                'confidence': 0.85 if extracted_text else 0.0
+            })()
+            
+            return result
+            
+        except Exception as e:
+            self.logger.error(f"Error in NuExtract image extraction: {str(e)}")
+            # Return OCRResult-like structure for compatibility
+            result = type('OCRResult', (), {
+                'text': '',
+                'confidence': 0.0
+            })()
+            return result
+    
+    async def extract_patient_data(self, text: str, patient_index: int = 0) -> Optional[PatientData]:
+        """
+        Extract patient data from text using NuExtract.
+        
+        Args:
+            text: Input text to extract from
+            patient_index: Index of the patient in multi-patient documents
+            
+        Returns:
+            Extracted patient data or None if extraction fails
         """
         try:
             # Extract structured data
@@ -660,7 +772,19 @@ Extracted JSON:"""
         
         try:
             import dateparser
+            from datetime import datetime
+            
+            # First try standard formats
+            for fmt in ["%Y-%m-%d", "%m/%d/%Y", "%d/%m/%Y", "%m-%d-%Y", "%d-%m-%Y"]:
+                try:
+                    parsed = datetime.strptime(date_str, fmt)
+                    return parsed.date()
+                except ValueError:
+                    continue
+            
+            # Fallback to dateparser
             parsed = dateparser.parse(date_str)
             return parsed.date() if parsed else None
-        except:
+        except Exception as e:
+            self.logger.debug(f"Date parsing failed for '{date_str}': {e}")
             return None

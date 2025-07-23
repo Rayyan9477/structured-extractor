@@ -12,15 +12,14 @@ from enum import Enum
 
 class PHIType(Enum):
     """Types of PHI (Protected Health Information)."""
-    SSN = "ssn"
     NAME = "name"
-    ADDRESS = "address"
+    DATE_OF_BIRTH = "date_of_birth"
+    SSN = "ssn"
     PHONE = "phone"
     EMAIL = "email"
-    DOB = "dob"
-    MRN = "mrn"
-    ACCOUNT = "account"
-    OTHER = "other"
+    ADDRESS = "address"
+    INSURANCE_ID = "insurance_id"
+    PATIENT_ID = "patient_id"
 
 
 @dataclass
@@ -28,28 +27,31 @@ class PHIItem:
     """Protected Health Information item."""
     phi_type: PHIType
     value: str
-    confidence: float
-    position: Optional[tuple] = None
+    confidence: float = 0.0
+    position: Optional[Tuple[int, int]] = None  # Start, end positions in text
+    context: Optional[str] = None  # Surrounding text for validation
 
 
+# --- Move CPTCode and ICD10Code definitions before PatientData ---
 @dataclass
 class CPTCode:
     """
     CPT (Current Procedural Terminology) code with metadata.
-    
-    Attributes:
-        code: The 5-digit CPT code
-        description: Optional description of the procedure
-        charge: Optional cost/charge amount
-        units: Number of times procedure was performed
-        date: Optional date when procedure was performed, as string to avoid circular refs
-        confidence: Confidence score of the extraction (0.0 to 1.0)
     """
     code: str
     description: Optional[str] = None
     charge: Optional[float] = None
     units: int = 1
-    date: Optional[str] = None
+    date: Optional[str] = None  # Use string literal for date
+    confidence: float = 0.0
+
+@dataclass
+class ICD10Code:
+    """
+    ICD-10 diagnosis code with metadata.
+    """
+    code: str
+    description: Optional[str] = None
     confidence: float = 0.0
 
 
@@ -133,11 +135,16 @@ class ICD10Code:
 
 @dataclass
 class PatientData:
-    """Patient information with multi-page support."""
-    first_name: Optional[str] = None
-    last_name: Optional[str] = None
+    """
+    Patient information with multi-page support.
+    """
+    # Required fields (no defaults)
+    first_name: str
+    last_name: str
+    
+    # Optional fields with defaults
     middle_name: Optional[str] = None
-    date_of_birth: Optional[str] = None  # Use ISO format YYYY-MM-DD
+    date_of_birth: Optional[str] = None  # ISO format YYYY-MM-DD
     patient_id: Optional[str] = None
     gender: Optional[str] = None
     address: Optional[str] = None
@@ -146,23 +153,19 @@ class PatientData:
     insurance_id: Optional[str] = None
     insurance_provider: Optional[str] = None
     
-    # CPT and ICD codes
-    cpt_codes: List[CPTCode] = field(default_factory=list)
-    icd10_codes: List[ICD10Code] = field(default_factory=list)
-    
-    # Page-related fields for multi-page processing
-    page_number: int = 0  # The primary page where this patient was found
-    total_pages: int = 0  # Total number of pages in the document
-    spans_multiple_pages: bool = False  # Whether this patient data spans multiple pages
-    page_numbers: List[int] = field(default_factory=list)  # All pages containing this patient's data
-    text_segment: Optional[str] = None  # Source text segment for this patient
-    
-    # Processing metadata
+    # Fields with default values
+    cpt_codes: List['CPTCode'] = field(default_factory=list)
+    icd10_codes: List['ICD10Code'] = field(default_factory=list)
+    page_number: int = 0
+    total_pages: int = 0
+    spans_multiple_pages: bool = False
+    page_numbers: List[int] = field(default_factory=list)
+    text_segment: Optional[str] = None
     extraction_confidence: float = 0.0
-    patient_index: int = 0  # Index in the original patient list
+    patient_index: int = 0
     validation_errors: List[str] = field(default_factory=list)
     confidences: Dict[str, FieldConfidence] = field(default_factory=dict)
-    
+
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary for serialization."""
         result = {
@@ -185,44 +188,22 @@ class PatientData:
             "page_number": self.page_number,
             "total_pages": self.total_pages,
         }
-        
-        # Add multi-page information if present
         if self.spans_multiple_pages:
             result["spans_multiple_pages"] = True
             result["page_numbers"] = self.page_numbers
-            
         if self.validation_errors:
             result["validation_errors"] = self.validation_errors
-            
-        # Add field-level confidence scores if available
         if self.confidences:
             result["field_confidences"] = {
                 field: {
-                    "score": conf.score,
+                    "score": conf.confidence,
                     "model": conf.model_name if conf.model_name else "default"
                 } for field, conf in self.confidences.items()
             }
-            
         return result
 
 
-@dataclass
-class CPTCode:
-    """CPT code with description and charge."""
-    code: str
-    description: Optional[str] = None
-    charge: Optional[float] = None
-    units: int = 1
-    date: Optional[date] = None
-    confidence: float = 0.0
 
-
-@dataclass
-class ICD10Code:
-    """ICD-10 diagnosis code."""
-    code: str
-    description: Optional[str] = None
-    confidence: float = 0.0
 
 
 @dataclass

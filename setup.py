@@ -9,12 +9,12 @@ with open("requirements.txt", "r", encoding="utf-8") as fh:
 setup(
     name="structured-extractor",
     version="1.0.0",
-    author="Your Name",
-    author_email="your.email@example.com",
+    author="Rayyan",
+    author_email="rayyan.a@outlook.com",
     description="A unified structured extraction system using multiple OCR and extraction models",
     long_description=long_description,
     long_description_content_type="text/markdown",
-    url="https://github.com/yourusername/structured-extractor",
+    url="https://github.com/Rayyan9477/structured-extractor",
     packages=find_packages(),
     classifiers=[
         "Programming Language :: Python :: 3",
