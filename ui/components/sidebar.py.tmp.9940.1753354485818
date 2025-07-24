@@ -38,7 +38,7 @@ def render_sidebar():
         # Model selection
         st.selectbox(
             "OCR Model",
-            ["Nanonets-OCR (Recommended)", "NuExtract-2.0-8B (Vision)", "Auto (Both)"],
+            ["Auto (Recommended)", "MonkeyOCR", "Nanonets-OCR", "Tesseract (Fallback)"],
             index=0
         )
         

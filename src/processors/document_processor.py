@@ -667,6 +667,16 @@ class DocumentProcessor:
             total_pages = doc.page_count
             self.logger.info(f"PDF contains {total_pages} pages")
             
+            # Optimize processing strategy based on page count
+            if total_pages > 10:
+                self.logger.warning(f"Large PDF detected ({total_pages} pages). Using conservative processing.")
+                # For large PDFs, process in smaller batches to avoid memory issues
+                batch_size = min(2, self._calculate_optimal_batch_size(total_pages))
+            else:
+                batch_size = min(total_pages, self._calculate_adaptive_batch_size())
+            
+            self.logger.info(f"Using batch size {batch_size} for optimal VLM processing")
+            
             # Determine page range
             start_page = (self.first_page - 1) if self.first_page else 0
             end_page = self.last_page if self.last_page else total_pages
@@ -702,6 +712,9 @@ class DocumentProcessor:
                 
                 if image.mode != 'RGB':
                     image = image.convert('RGB')
+                
+                # Optimize for VLM processing (reduce token usage)
+                image = self._optimize_for_vlm(image, page_num + 1, total_pages)
                 
                 # Store original page number as metadata
                 image.page_number = page_num + 1
@@ -755,3 +768,67 @@ class DocumentProcessor:
             except Exception as fallback_error:
                 self.logger.error(f"Fallback processing also failed: {fallback_error}")
                 raise
+    
+    def _calculate_optimal_batch_size(self, total_pages: int) -> int:
+        """Calculate optimal batch size for VLM processing based on page count."""
+        if total_pages <= 5:
+            return total_pages
+        elif total_pages <= 15:
+            return 3
+        elif total_pages <= 30:
+            return 2
+        else:
+            return 1  # Very conservative for large documents
+    
+    def _optimize_for_vlm(self, image: Image.Image, page_num: int, total_pages: int) -> Image.Image:
+        """
+        Optimize image for VLM processing to reduce token usage and prevent processing issues.
+        
+        Args:
+            image: PIL Image to optimize
+            page_num: Current page number
+            total_pages: Total number of pages
+            
+        Returns:
+            Optimized PIL Image
+        """
+        try:
+            # VLM optimal resolution - balance between readability and token usage
+            MAX_VLM_WIDTH = 1024
+            MAX_VLM_HEIGHT = 1024
+            MAX_VLM_PIXELS = MAX_VLM_WIDTH * MAX_VLM_HEIGHT
+            
+            original_width, original_height = image.size
+            original_pixels = original_width * original_height
+            
+            # Resize if image is too large for VLM processing
+            if original_pixels > MAX_VLM_PIXELS:
+                # Calculate scaling factor to maintain aspect ratio
+                scale_factor = (MAX_VLM_PIXELS / original_pixels) ** 0.5
+                new_width = int(original_width * scale_factor)
+                new_height = int(original_height * scale_factor)
+                
+                # Ensure dimensions are even (some models prefer this)
+                new_width = new_width if new_width % 2 == 0 else new_width - 1
+                new_height = new_height if new_height % 2 == 0 else new_height - 1
+                
+                self.logger.info(f"Page {page_num}/{total_pages}: Optimizing from {original_width}x{original_height} to {new_width}x{new_height} for VLM")
+                
+                # Use high-quality resampling for medical documents
+                image = image.resize((new_width, new_height), Image.LANCZOS)
+            
+            # Additional optimization for multi-page documents
+            if total_pages > 5:
+                # For multi-page docs, be even more conservative with sizing
+                if image.width > 800 or image.height > 800:
+                    ratio = min(800 / image.width, 800 / image.height)
+                    new_width = int(image.width * ratio)
+                    new_height = int(image.height * ratio)
+                    image = image.resize((new_width, new_height), Image.LANCZOS)
+                    self.logger.debug(f"Page {page_num}: Multi-page optimization to {new_width}x{new_height}")
+            
+            return image
+            
+        except Exception as e:
+            self.logger.warning(f"VLM optimization failed for page {page_num}: {e}")
+            return image  # Return original if optimization fails

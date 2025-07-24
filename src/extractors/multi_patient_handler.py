@@ -213,10 +213,13 @@ class PatientBoundaryDetector:
         Returns:
             True if context suggests a new patient section
         """
-        # Check for demographic indicators
+        # Enhanced demographic indicators for better patient detection
         demographic_indicators = [
             r"\bDOB\b", r"\bBIRTH\b", r"\bAGE\b", r"\bSEX\b", r"\bGENDER\b",
-            r"\bADDRESS\b", r"\bPHONE\b", r"\bEMAIL\b", r"\bINSURANCE\b"
+            r"\bADDRESS\b", r"\bPHONE\b", r"\bEMAIL\b", r"\bINSURANCE\b",
+            r"\bPATIENT\s+ID\b", r"\bMEDICAL\s+RECORD\b", r"\bMRN\b",
+            r"\bACCOUNT\s+NUMBER\b", r"\bSSN\b", r"\bSOCIAL\s+SECURITY\b",
+            r"\bDATE\s+OF\s+SERVICE\b", r"\bSERVICE\s+DATE\b", r"\bDOS\b"
         ]
         
         indicator_count = 0

@@ -90,31 +90,16 @@ class ExtractionPipeline:
             if not images:
                 raise ValueError("No images could be extracted from the document")
             
-            # Step 2: Extract text using OCR with fallback to NuExtract if OCR fails
+            # Step 2: Extract text using OCR (Nanonets only - no fallbacks)
             ocr_results = []
-            try:
-                for img in images:
-                    result = await self.ocr_engine.extract_text(img)
-                    ocr_results.append(result)
-                
-                if not any(r.text.strip() for r in ocr_results):
-                    self.logger.warning("No text extracted by OCR, falling back to NuExtract")
-                    raise ValueError("No text extracted by OCR")
-                    
-            except Exception as ocr_error:
-                self.logger.warning(f"OCR extraction failed: {ocr_error}. Falling back to NuExtract...")
-                # Fall back to NuExtract for direct image processing
-                ocr_results = []
-                for img in images:
-                    # Convert PIL Image to bytes for NuExtract
-                    import io
-                    img_byte_arr = io.BytesIO()
-                    img.save(img_byte_arr, format='PNG')
-                    img_byte_arr = img_byte_arr.getvalue()
-                    
-                    # Use NuExtract for text extraction
-                    extracted = await self.nuextract_engine.extract_from_image(img_byte_arr)
-                    ocr_results.append(extracted)
+            for img in images:
+                result = await self.ocr_engine.extract_text(img)
+                ocr_results.append(result)
+            
+            # Validate OCR results
+            if not any(r.text.strip() for r in ocr_results):
+                self.logger.error("No text extracted by OCR")
+                raise ValueError("OCR failed to extract any text from the document")
             
             # Step 3: Process each page independently
             all_patients = []
@@ -223,8 +208,10 @@ class ExtractionPipeline:
         async def extract_single_patient(segment_text: str, patient_index: int) -> Optional[PatientData]:
             """Extract data for a single patient segment."""
             try:
-                # Method 1: NuExtract structured extraction directly to PatientData
-                nuextract_patient = await self.nuextract_engine.extract_patient_data(segment_text, patient_index)
+                # Method 1: NuExtract structured extraction (text-only mode)
+                # Use NuExtract for structured data extraction from text (not vision processing)
+                structured_data = await self.nuextract_engine.extract_structured_data(segment_text, "medical_superbill")
+                nuextract_patient = self._convert_structured_to_patient_data(structured_data, patient_index) if structured_data else None
                 
                 if nuextract_patient:
                     # Enhance with field detection
@@ -557,6 +544,26 @@ class ExtractionPipeline:
             return 0.5  # Default confidence
         
         return sum(confidences) / len(confidences)
+    
+    def _convert_structured_to_patient_data(self, structured_data: Dict[str, Any], patient_index: int) -> Optional[PatientData]:
+        """Convert NuExtract structured data to PatientData format."""
+        try:
+            if not structured_data or "patients" not in structured_data:
+                return None
+            
+            patients = structured_data["patients"]
+            if not patients or len(patients) <= patient_index:
+                return None
+            
+            patient_data = patients[patient_index]
+            patient_info = patient_data.get("patient_info", {})
+            
+            # Create PatientData using the conversion method from NuExtract engine
+            return self.nuextract_engine._convert_to_patient_data(patient_data, structured_data.get("provider_data"))
+            
+        except Exception as e:
+            self.logger.error(f"Failed to convert structured data to PatientData: {e}")
+            return None
     
     async def batch_extract(self, file_paths: List[str]) -> List[ExtractionResults]:
         """

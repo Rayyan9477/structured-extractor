@@ -18,9 +18,7 @@ from pathlib import Path
 from src.core.config_manager import ConfigManager
 from src.core.logger import get_logger
 from src.core.data_schema import OCRResult, FieldConfidence
-from src.processors.monkey_ocr_engine import MonkeyOCREngine
 from src.processors.nanonets_ocr_engine import NanonetsOCREngine
-from src.processors.trocr_engine import TrOCREngine
 from src.processors.ocr_error_handling import OCRErrorHandler, OCRErrorType
 from src.processors.ocr_ensemble_manager import OCREnsembleManager
 from src.processors.resource_manager import (
@@ -83,9 +81,9 @@ class UnifiedOCREngine(OCRErrorHandler):
         
         # Get OCR configuration
         self.ocr_config = self.config.get("ocr", {})
-        self.use_models = self.ocr_config.get("ensemble.use_models", ["nanonets_ocr", "monkey_ocr"])
-        self.weights = self.ocr_config.get("ensemble.weights", {})
-        self.method = self.ocr_config.get("ensemble.method", "best_confidence")
+        self.use_models = self.ocr_config.get("ensemble", {}).get("use_models", ["nanonets_ocr"])
+        self.weights = self.ocr_config.get("ensemble", {}).get("weights", {})
+        self.method = self.ocr_config.get("ensemble", {}).get("method", "best_confidence")
         
         # Device selection moved to resource manager
         self.default_device = self._get_device()  # Fallback device
@@ -93,22 +91,10 @@ class UnifiedOCREngine(OCRErrorHandler):
         
         # Engine configuration
         self.engine_configs = {
-            "monkey_ocr": {
-                "type": ModelType.OCR,
-                "priority": ModelPriority.HIGH,
-                "class": MonkeyOCREngine,
-                "sub_models": ["structure", "recognition", "relation"]
-            },
             "nanonets_ocr": {
                 "type": ModelType.OCR,
                 "priority": ModelPriority.HIGH,
                 "class": NanonetsOCREngine,
-                "sub_models": []
-            },
-            "trocr": {
-                "type": ModelType.OCR,
-                "priority": ModelPriority.MEDIUM,
-                "class": TrOCREngine,
                 "sub_models": []
             }
         }
@@ -244,11 +230,7 @@ class UnifiedOCREngine(OCRErrorHandler):
             else:
                 self.logger.warning("Continuing with reduced model availability")
                 
-        # Initialize ensemble manager with loaded engines
-        await self.ensemble_manager.initialize(
-            self.engines,
-            {name: self.weights.get(name, 1.0) for name in self.engines}
-        )
+        # Ensemble manager is already initialized - no additional setup needed
 
     async def _load_engine_safely(self, engine_name: str, engine_class) -> bool:
         """
@@ -268,7 +250,8 @@ class UnifiedOCREngine(OCRErrorHandler):
         
         try:
             # Create engine instance
-            engine = engine_class(self.config)
+            # Use the existing engine instance (already created in initialization)
+            engine = self.engines.get(engine_name) or engine_class(self.config)
             
             # Define model loader function
             async def model_loader(device: str):

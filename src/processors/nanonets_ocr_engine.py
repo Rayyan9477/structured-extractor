@@ -14,7 +14,7 @@ import base64
 import io
 from pathlib import Path
 
-from transformers import AutoTokenizer, AutoProcessor, AutoModelForImageTextToText
+from transformers import AutoTokenizer, AutoProcessor, AutoModelForVision2Seq
 from src.core.config_manager import ConfigManager
 from src.core.logger import get_logger
 from src.core.data_schema import OCRResult, FieldConfidence
@@ -74,15 +74,20 @@ class NanonetsOCREngine:
         self.logger.info(f"Loading Nanonets OCR model from: {self.model_path}")
         
         try:
-            # Load model, processor, and tokenizer
-            self.model = AutoModelForImageTextToText.from_pretrained(
-                str(self.model_path),
-                torch_dtype="auto",
-                device_map="auto" if self.device == "cuda" else None,
-                trust_remote_code=True
-            )
+            # Load the model for Vision2Seq tasks
+            try:
+                self.model = AutoModelForVision2Seq.from_pretrained(
+                    str(self.model_path),
+                    torch_dtype=torch.bfloat16 if torch.cuda.is_available() else torch.float32,
+                    device_map="auto" if torch.cuda.is_available() else None,
+                    trust_remote_code=True
+                )
+            except Exception as e:
+                self.logger.error(f"Failed to load Nanonets OCR model: {e}")
+                raise
             
-            if self.device != "cuda":
+            # Don't move model when using device_map="auto" - it handles device placement automatically
+            if not torch.cuda.is_available():
                 self.model.to(self.device)
             
             self.model.eval()

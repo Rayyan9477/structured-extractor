@@ -33,98 +33,69 @@ def render_extraction_config():
         col1, col2 = st.columns(2)
         
         with col1:
-            # MonkeyOCR settings
-            st.markdown("#### MonkeyOCR Settings")
-            
-            if "models" in config and "ocr" in config["models"] and "monkey_ocr" in config["models"]["ocr"]:
-                monkey_config = config["models"]["ocr"]["monkey_ocr"]
-                
-                monkey_model_name = st.text_input(
-                    "Model Name",
-                    value=monkey_config.get("model_name", "echo840/MonkeyOCR")
-                )
-                
-                monkey_max_length = st.number_input(
-                    "Max Length",
-                    min_value=128,
-                    max_value=1024,
-                    value=monkey_config.get("max_length", 512),
-                    step=128
-                )
-                
-                monkey_confidence = st.slider(
-                    "Confidence Threshold",
-                    min_value=0.0,
-                    max_value=1.0,
-                    value=monkey_config.get("confidence_threshold", 0.7),
-                    step=0.05
-                )
-        
-        with col2:
             # Nanonets settings
             st.markdown("#### Nanonets-OCR Settings")
             
-            if "models" in config and "ocr" in config["models"] and "nanonets_ocr" in config["models"]["ocr"]:
-                nanonets_config = config["models"]["ocr"]["nanonets_ocr"]
-                
-                nanonets_model_name = st.text_input(
-                    "Model Name",
-                    value=nanonets_config.get("model_name", "nanonets/Nanonets-OCR-s")
-                )
-                
-                nanonets_max_length = st.number_input(
-                    "Max Length",
-                    min_value=128,
-                    max_value=2048,
-                    value=nanonets_config.get("max_length", 1024),
-                    step=128
-                )
-                
-                nanonets_confidence = st.slider(
-                    "Confidence Threshold",
-                    min_value=0.0,
-                    max_value=1.0,
-                    value=nanonets_config.get("confidence_threshold", 0.8),
-                    step=0.05
-                )
+            # Use actual config structure
+            nanonets_config = config.get("ocr", {}).get("nanonets_ocr", {})
+            
+            nanonets_model_name = st.text_input(
+                "Model Name",
+                value=nanonets_config.get("model_name", "nanonets/Nanonets-OCR-s")
+            )
+            
+            nanonets_max_length = st.number_input(
+                "Max New Tokens",
+                min_value=128,
+                max_value=15000,
+                value=nanonets_config.get("max_new_tokens", 15000),
+                step=128
+            )
+            
+            nanonets_timeout = st.number_input(
+                "Timeout (seconds)",
+                min_value=30,
+                max_value=120,
+                value=nanonets_config.get("timeout", 60),
+                step=10
+            )
         
-        st.markdown("### Extraction Model Configuration")
-        
-        if "models" in config and "extraction" in config["models"] and "nuextract" in config["models"]["extraction"]:
-            nuextract_config = config["models"]["extraction"]["nuextract"]
+        with col2:
+            # NuExtract Vision OCR settings
+            st.markdown("#### NuExtract Vision-OCR Settings")
+            
+            nuextract_config = config.get("extraction", {}).get("nuextract", {})
             
             nuextract_model_name = st.text_input(
                 "NuExtract Model Name",
-                value=nuextract_config.get("model_name", "numind/NuExtract-2.0-4B")
+                value=nuextract_config.get("model_name", "numind/NuExtract-2.0-8B")
             )
             
-            col1, col2 = st.columns(2)
+            nuextract_max_length = st.number_input(
+                "Max Context Length",
+                min_value=1024,
+                max_value=8192,
+                value=nuextract_config.get("max_length", 8192),
+                step=256
+            )
             
-            with col1:
-                nuextract_max_length = st.number_input(
-                    "Max Length",
-                    min_value=512,
-                    max_value=4096,
-                    value=nuextract_config.get("max_length", 2048),
-                    step=256
-                )
-            
-            with col2:
-                nuextract_temperature = st.slider(
-                    "Temperature",
-                    min_value=0.0,
-                    max_value=1.0,
-                    value=nuextract_config.get("temperature", 0.1),
-                    step=0.05
-                )
-                
-                nuextract_top_p = st.slider(
-                    "Top P",
-                    min_value=0.0,
-                    max_value=1.0,
-                    value=nuextract_config.get("top_p", 0.9),
-                    step=0.05
-                )
+            nuextract_temperature = st.slider(
+                "Temperature",
+                min_value=0.0,
+                max_value=1.0,
+                value=nuextract_config.get("temperature", 0.1),
+                step=0.05
+            )
+        
+        st.markdown("### Model Selection")
+        
+        # Add model selection options
+        use_models = st.multiselect(
+            "Active Models",
+            ["nanonets_ocr", "nuextract_vision"],
+            default=["nanonets_ocr"],
+            help="Select which models to use for processing"
+        )
     
     # Document Processing configuration
     with tab2:
@@ -336,26 +307,27 @@ def render_extraction_config():
         if st.button("Export Configuration"):
             # Create updated config from UI values
             updated_config = {
-                "models": {
-                    "ocr": {
-                        "monkey_ocr": {
-                            "model_name": monkey_model_name,
-                            "max_length": monkey_max_length,
-                            "confidence_threshold": monkey_confidence
-                        },
-                        "nanonets_ocr": {
-                            "model_name": nanonets_model_name,
-                            "max_length": nanonets_max_length,
-                            "confidence_threshold": nanonets_confidence
+                "ocr": {
+                    "ensemble": {
+                        "use_models": use_models,
+                        "method": "best_confidence",
+                        "weights": {
+                            "nanonets_ocr": 1.3
                         }
                     },
-                    "extraction": {
-                        "nuextract": {
-                            "model_name": nuextract_model_name,
-                            "max_length": nuextract_max_length,
-                            "temperature": nuextract_temperature,
-                            "top_p": nuextract_top_p
-                        }
+                    "nanonets_ocr": {
+                        "model_name": nanonets_model_name,
+                        "max_new_tokens": nanonets_max_length,
+                        "timeout": nanonets_timeout,
+                        "use_local": True
+                    }
+                },
+                "extraction": {
+                    "nuextract": {
+                        "model_name": nuextract_model_name,
+                        "max_length": nuextract_max_length,
+                        "temperature": nuextract_temperature,
+                        "use_local": True
                     }
                 },
                 "document_processing": {
@@ -432,26 +404,27 @@ def _load_default_config():
         else:
             # Return a basic default config
             return {
-                "models": {
-                    "ocr": {
-                        "monkey_ocr": {
-                            "model_name": "echo840/MonkeyOCR",
-                            "max_length": 512,
-                            "confidence_threshold": 0.7
-                        },
-                        "nanonets_ocr": {
-                            "model_name": "nanonets/Nanonets-OCR-s",
-                            "max_length": 1024,
-                            "confidence_threshold": 0.8
+                "ocr": {
+                    "ensemble": {
+                        "use_models": ["nanonets_ocr"],
+                        "method": "best_confidence",
+                        "weights": {
+                            "nanonets_ocr": 1.3
                         }
                     },
-                    "extraction": {
-                        "nuextract": {
-                            "model_name": "numind/NuExtract-2.0-4B",
-                            "max_length": 2048,
-                            "temperature": 0.1,
-                            "top_p": 0.9
-                        }
+                    "nanonets_ocr": {
+                        "model_name": "nanonets/Nanonets-OCR-s",
+                        "max_new_tokens": 15000,
+                        "timeout": 60,
+                        "use_local": True
+                    }
+                },
+                "extraction": {
+                    "nuextract": {
+                        "model_name": "numind/NuExtract-2.0-8B",
+                        "max_length": 8192,
+                        "temperature": 0.1,
+                        "use_local": True
                     }
                 },
                 "document_processing": {
