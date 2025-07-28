@@ -177,7 +177,7 @@ class ResourceManager:
         metadata: Dict[str, Any] = None
     ) -> Tuple[Any, str]:
         """
-        Load a model with resource management.
+        Load a model with resource management and sequential loading.
         
         Args:
             model_id: Unique identifier for the model
@@ -194,22 +194,25 @@ class ResourceManager:
         if model_id in self._models:
             resource = self._models[model_id]
             resource.last_used = time.time()
+            self.logger.info(f"Model {model_id} already loaded, returning existing instance")
             return resource.model, resource.device
         
         # Select device
         device = self._select_device(preferred_device)
+        self.logger.info(f"Loading model {model_id} on device {device}")
         
-        # Ensure memory available
+        # Ensure memory available with proper cleanup
         await self._ensure_memory_available(model_type, device)
         
-        # Load the model
+        # Load the model with comprehensive error handling
         try:
+            self.logger.info(f"Starting model loading for {model_id}...")
             model = await loader_func(device)
             
-            # Track memory usage
+            # Track memory usage more accurately
             memory_before = self._get_memory_usage(device)
             memory_after = self._get_memory_usage(device)
-            memory_used = memory_after - memory_before
+            memory_used = max(0, memory_after - memory_before)
             
             # Register model
             self._models[model_id] = ModelResource(
@@ -227,23 +230,29 @@ class ResourceManager:
                 self._device_allocations[device] = set()
             self._device_allocations[device].add(model_id)
             
+            self.logger.info(f"Successfully loaded model {model_id} on {device} (memory: {memory_used / 1024**3:.2f} GB)")
             return model, device
             
         except Exception as e:
             self.logger.error(f"Failed to load model {model_id}: {e}")
-            raise
-    
+            # Clean up any partial loading
+            if model_id in self._models:
+                del self._models[model_id]
+            raise RuntimeError(f"Model loading failed for {model_id}: {e}")
+
     async def unload_model(self, model_id: str):
         """
-        Unload a model and free its resources.
+        Unload a model and free its resources with proper cleanup.
         
         Args:
             model_id: ID of model to unload
         """
         if model_id not in self._models:
+            self.logger.debug(f"Model {model_id} not found for unloading")
             return
         
         resource = self._models[model_id]
+        self.logger.info(f"Unloading model {model_id} from {resource.device}")
         
         try:
             # Clear from device
@@ -252,7 +261,7 @@ class ResourceManager:
             
             # Remove from device tracking
             if resource.device in self._device_allocations:
-                self._device_allocations[resource.device].remove(model_id)
+                self._device_allocations[resource.device].discard(model_id)
             
             # Clear model reference
             del self._models[model_id]
@@ -260,10 +269,13 @@ class ResourceManager:
             # Force cleanup
             if torch.cuda.is_available() and resource.device.startswith('cuda'):
                 torch.cuda.empty_cache()
+            
+            # Force garbage collection
+            gc.collect()
                 
         except Exception as e:
             self.logger.error(f"Error unloading model {model_id}: {e}")
-    
+
     def _select_device(self, preferred_device: Optional[str] = None) -> str:
         """Select the best device for a new model."""
         if preferred_device and self._is_device_available(preferred_device):
@@ -314,23 +326,43 @@ class ResourceManager:
         return 0
     
     async def _ensure_memory_available(self, model_type: ModelType, device: str):
-        """Ensure sufficient memory is available for a new model."""
-        if device == "cpu":
-            memory = psutil.virtual_memory()
-            if memory.percent > self.memory_high:
+        """Ensure sufficient memory is available for model loading."""
+        try:
+            # Get current memory usage
+            current_memory = self._get_memory_usage(device)
+            total_memory = self._get_total_memory(device)
+            memory_usage_percent = (current_memory / total_memory) * 100
+            
+            self.logger.debug(f"Current memory usage on {device}: {memory_usage_percent:.1f}%")
+            
+            # If memory usage is high, perform cleanup
+            if memory_usage_percent > self.memory_high:
+                self.logger.warning(f"High memory usage on {device}: {memory_usage_percent:.1f}%")
                 await self._selective_cleanup()
-            if memory.percent > self.memory_critical:
-                await self._emergency_cleanup()
                 
-        elif device.startswith("cuda"):
-            try:
-                device_idx = int(device.split(":")[-1])
-                total = torch.cuda.get_device_properties(device_idx).total_memory
-                used = torch.cuda.memory_allocated(device_idx)
-                if used / total > 0.9:  # 90% GPU memory used
-                    await self._selective_cleanup()
-            except:
-                pass
+                # Check again after cleanup
+                current_memory = self._get_memory_usage(device)
+                memory_usage_percent = (current_memory / total_memory) * 100
+                
+                if memory_usage_percent > self.memory_critical:
+                    self.logger.error(f"Critical memory usage on {device}: {memory_usage_percent:.1f}%")
+                    await self._emergency_cleanup()
+                    
+        except Exception as e:
+            self.logger.error(f"Error ensuring memory availability: {e}")
+
+    def _get_total_memory(self, device: str) -> int:
+        """Get total memory available on device."""
+        try:
+            if device.startswith('cuda') and torch.cuda.is_available():
+                return torch.cuda.get_device_properties(0).total_memory
+            else:
+                # For CPU, use system memory
+                import psutil
+                return psutil.virtual_memory().total
+        except Exception as e:
+            self.logger.warning(f"Could not get total memory for {device}: {e}")
+            return 8 * 1024**3  # Default to 8GB
     
     def get_model_info(self, model_id: str) -> Optional[ModelResource]:
         """Get information about a loaded model."""

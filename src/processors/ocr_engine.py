@@ -234,7 +234,7 @@ class UnifiedOCREngine(OCRErrorHandler):
 
     async def _load_engine_safely(self, engine_name: str, engine_class) -> bool:
         """
-        Load an engine safely using resource management and error handling.
+        Load an engine safely using resource management and comprehensive error handling.
         
         Args:
             engine_name: Name of the engine to load
@@ -249,34 +249,67 @@ class UnifiedOCREngine(OCRErrorHandler):
             return False
         
         try:
-            # Create engine instance
-            # Use the existing engine instance (already created in initialization)
+            # Create engine instance with validation
+            self.logger.info(f"Initializing {engine_name} engine...")
             engine = self.engines.get(engine_name) or engine_class(self.config)
             
-            # Define model loader function
+            # Validate engine initialization
+            if not hasattr(engine, 'load_models'):
+                self.logger.error(f"Engine {engine_name} does not have required load_models method")
+                return False
+            
+            # Define model loader function with retry logic
             async def model_loader(device: str):
-                engine.device = device
-                await engine.load_models()
-                return engine
+                try:
+                    engine.device = device
+                    await engine.load_models()
+                    
+                    # Validate that models are actually loaded
+                    if hasattr(engine, 'models_loaded') and not engine.models_loaded:
+                        raise RuntimeError(f"Engine {engine_name} failed to load models properly")
+                    
+                    return engine
+                except Exception as e:
+                    self.logger.error(f"Failed to load {engine_name} on {device}: {e}")
+                    raise
             
-            # Load using resource manager
-            loaded_engine, device = await self.resource_manager.load_model(
-                model_id=f"ocr_{engine_name}",
-                model_type=config["type"],
-                priority=config["priority"],
-                loader_func=model_loader,
-                preferred_device=self.default_device,
-                metadata={
-                    "engine_name": engine_name,
-                    "sub_models": config["sub_models"],
-                }
-            )
+            # Load using resource manager with retry logic
+            max_retries = 3
+            for attempt in range(max_retries):
+                try:
+                    loaded_engine, device = await self.resource_manager.load_model(
+                        model_id=f"ocr_{engine_name}",
+                        model_type=config["type"],
+                        priority=config["priority"],
+                        loader_func=model_loader,
+                        preferred_device=self.default_device,
+                        metadata={
+                            "engine_name": engine_name,
+                            "sub_models": config["sub_models"],
+                        }
+                    )
+                    
+                    # Store in engines dictionary
+                    self.engines[engine_name] = loaded_engine
+                    self.logger.info(f"{engine_name} loaded successfully on {device} (attempt {attempt + 1})")
+                    
+                    return True
+                    
+                except Exception as e:
+                    self.logger.warning(f"Attempt {attempt + 1} failed for {engine_name}: {e}")
+                    if attempt < max_retries - 1:
+                        # Wait before retry
+                        await asyncio.sleep(2 ** attempt)  # Exponential backoff
+                    else:
+                        # Final attempt failed
+                        error = self.handle_error(
+                            e,
+                            context=f"Loading {engine_name} after {max_retries} attempts",
+                            error_type=OCRErrorType.MODEL_LOADING
+                        )
+                        return False
             
-            # Store in engines dictionary
-            self.engines[engine_name] = loaded_engine
-            self.logger.info(f"{engine_name} loaded successfully on {device}")
-            
-            return True
+            return False
             
         except Exception as e:
             error = self.handle_error(
@@ -284,6 +317,10 @@ class UnifiedOCREngine(OCRErrorHandler):
                 context=f"Loading {engine_name}",
                 error_type=OCRErrorType.MODEL_LOADING
             )
+            
+            # Clean up any partial loading
+            if engine_name in self.engines:
+                del self.engines[engine_name]
             
             return False
 

@@ -6,6 +6,7 @@ Handles loading and managing configuration settings from YAML files.
 
 import os
 import yaml
+import re
 from typing import Dict, Any, Optional
 from pathlib import Path
 import logging
@@ -30,23 +31,80 @@ class ConfigManager:
         self.config = self._load_config()
     
     def _get_default_config_path(self) -> str:
-        """Get the default configuration file path."""
-        current_dir = Path(__file__).parent.parent.parent
-        return str(current_dir / "config" / "config.yaml")
+        """Get the default configuration file path with security validation."""
+        current_dir = Path(__file__).parent.parent.parent.resolve()
+        config_path = current_dir / "config" / "config.yaml"
+        
+        # Security validation - ensure path is within project
+        try:
+            config_path.resolve().relative_to(current_dir)
+        except ValueError:
+            raise ValueError("Configuration path outside project directory")
+        
+        return str(config_path)
     
     def _load_config(self) -> Dict[str, Any]:
-        """Load configuration from YAML file."""
+        """Load configuration from YAML file with environment variable expansion."""
         try:
+            # Security check - validate config file path
+            if not self.config_path.exists():
+                logger.warning(f"Configuration file not found: {self.config_path}")
+                return {}
+            
+            # Check file permissions (not writable by others)
+            stat_info = self.config_path.stat()
+            if stat_info.st_mode & 0o022:  # Check if group or other writable
+                logger.warning(f"Configuration file has unsafe permissions: {self.config_path}")
+            
             with open(self.config_path, 'r', encoding='utf-8') as file:
-                config = yaml.safe_load(file)
-                logger.info(f"Configuration loaded from {self.config_path}")
-                return config
+                config_text = file.read()
+                
+            # Expand environment variables in config
+            config_text = self._expand_env_variables(config_text)
+            
+            # Parse YAML safely
+            config = yaml.safe_load(config_text)
+            logger.info(f"Configuration loaded from {self.config_path}")
+            return config or {}
         except FileNotFoundError:
             logger.error(f"Configuration file not found: {self.config_path}")
             raise
         except yaml.YAMLError as e:
             logger.error(f"Error parsing configuration file: {e}")
             raise
+        except Exception as e:
+            logger.error(f"Error loading configuration: {e}")
+            raise
+    
+    def _expand_env_variables(self, config_text: str) -> str:
+        """
+        Expand environment variables in configuration text.
+        Supports format: ${VAR_NAME} and ${VAR_NAME:default_value}
+        """
+        def replacer(match):
+            var_expr = match.group(1)
+            if ':' in var_expr:
+                var_name, default_value = var_expr.split(':', 1)
+            else:
+                var_name, default_value = var_expr, ''
+            
+            # Security: Only allow alphanumeric and underscore in env var names
+            if not re.match(r'^[A-Z0-9_]+$', var_name):
+                logger.warning(f"Invalid environment variable name: {var_name}")
+                return match.group(0)  # Return original if invalid
+            
+            env_value = os.getenv(var_name)
+            if env_value is not None:
+                return env_value
+            elif default_value:
+                return default_value
+            else:
+                logger.warning(f"Environment variable {var_name} not set and no default provided")
+                return ''
+        
+        # Pattern to match ${VAR_NAME} or ${VAR_NAME:default}
+        pattern = r'\$\{([^}]+)\}'
+        return re.sub(pattern, replacer, config_text)
     
     def get_cache_dir(self) -> str:
         """Get model cache directory."""

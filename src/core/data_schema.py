@@ -49,16 +49,6 @@ class CPTCode:
 class ICD10Code:
     """
     ICD-10 diagnosis code with metadata.
-    """
-    code: str
-    description: Optional[str] = None
-    confidence: float = 0.0
-
-
-@dataclass
-class ICD10Code:
-    """
-    ICD-10 diagnosis code with metadata.
     
     Attributes:
         code: The ICD-10 code (letter + numbers + optional decimal portion)
@@ -85,6 +75,7 @@ class OCRResult:
     confidence: float
     model_name: str = "default"
     processing_time: float = 0.0
+    additional_data: Optional[Dict[str, Any]] = field(default_factory=dict)
 
 
 @dataclass
@@ -125,12 +116,6 @@ class ExtractionResults:
     error_message: Optional[str] = None
 
 
-@dataclass
-class ICD10Code:
-    """ICD-10 diagnosis code."""
-    code: str
-    description: Optional[str] = None
-    confidence: float = 0.0
 
 
 @dataclass

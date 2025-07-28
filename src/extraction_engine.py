@@ -222,7 +222,6 @@ class ExtractionPipeline:
                     enhanced_data = self._validate_patient_dates(enhanced_data)
                     
                     # Set patient index
-
                     enhanced_data.patient_index = patient_index
                     
                     return enhanced_data
@@ -331,8 +330,8 @@ class ExtractionPipeline:
                 patient_data.financial_info = FinancialInfo()
             
             amounts = field_results['amounts']
-            if not patient_data.financial_info.total_charges and amounts:
-                patient_data.financial_info.total_charges = amounts[0]
+            if not patient_data.financial_info.total_charge and amounts:
+                patient_data.financial_info.total_charge = amounts[0]
         
         # Enhance PHI detection confidence
         if 'phi_detected' in field_results:
@@ -431,39 +430,39 @@ class ExtractionPipeline:
         try:
             from src.core.data_schema import CPTCode, ICD10Code, ServiceInfo, FinancialInfo, FieldConfidence
             
-            # Create basic patient data
-            patient_data = PatientData(patient_index=patient_index)
+            # Extract name first since it's required
+            first_name = "Unknown"
+            last_name = "Patient"
             
-            # Set name if available
             if has_name:
                 names = field_results['names']
                 if names:
                     name_parts = names[0].split()
                     if len(name_parts) >= 2:
-                        patient_data.first_name = name_parts[0]
-                        patient_data.last_name = " ".join(name_parts[1:])
+                        first_name = name_parts[0]
+                        last_name = " ".join(name_parts[1:])
                     else:
-                        patient_data.first_name = names[0]
+                        first_name = names[0]
+                        last_name = ""
+            
+            # Create basic patient data with required fields
+            patient_data = PatientData(
+                first_name=first_name,
+                last_name=last_name,
+                patient_index=patient_index
+            )
             
             # Set CPT codes
             if has_cpt:
                 patient_data.cpt_codes = [
-                    CPTCode(code=code, description="", confidence=FieldConfidence(
-                        value=0.7, 
-                        source="field_detector", 
-                        method="regex_pattern"
-                    ))
+                    CPTCode(code=code, description="", confidence=0.7)
                     for code in field_results['cpt_codes']
                 ]
             
             # Set ICD-10 codes
             if 'icd10_codes' in field_results:
                 patient_data.icd10_codes = [
-                    ICD10Code(code=code, description="", confidence=FieldConfidence(
-                        value=0.7, 
-                        source="field_detector", 
-                        method="regex_pattern"
-                    ))
+                    ICD10Code(code=code, description="", confidence=0.7)
                     for code in field_results['icd10_codes']
                 ]
             
@@ -518,7 +517,7 @@ class ExtractionPipeline:
             # Set financial information
             if 'amounts' in field_results and field_results['amounts']:
                 patient_data.financial_info = FinancialInfo(
-                    total_charges=field_results['amounts'][0]
+                    total_charge=field_results['amounts'][0]
                 )
             
             # Set PHI detection

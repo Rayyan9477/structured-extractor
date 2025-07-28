@@ -67,42 +67,50 @@ class NanonetsOCREngine:
         return "cpu"
 
     async def load_models(self) -> None:
-        """Load the Nanonets OCR model and processor."""
+        """Load the Nanonets OCR model and processor with comprehensive error handling."""
         if self.models_loaded:
             return
             
         self.logger.info(f"Loading Nanonets OCR model from: {self.model_path}")
         
+        # Validate model files exist
+        if not self._validate_model_files():
+            raise RuntimeError(f"Nanonets OCR model files not found or incomplete at {self.model_path}")
+        
         try:
-            # Load the model for Vision2Seq tasks
-            try:
-                self.model = AutoModelForVision2Seq.from_pretrained(
-                    str(self.model_path),
-                    torch_dtype=torch.bfloat16 if torch.cuda.is_available() else torch.float32,
-                    device_map="auto" if torch.cuda.is_available() else None,
-                    trust_remote_code=True
-                )
-            except Exception as e:
-                self.logger.error(f"Failed to load Nanonets OCR model: {e}")
-                raise
+            # Load the model for Vision2Seq tasks with proper error handling
+            self.logger.info("Loading Nanonets OCR model...")
+            self.model = AutoModelForVision2Seq.from_pretrained(
+                str(self.model_path),
+                torch_dtype=torch.bfloat16 if torch.cuda.is_available() else torch.float32,
+                device_map="auto" if torch.cuda.is_available() else None,
+                trust_remote_code=True,
+                low_cpu_mem_usage=True if torch.cuda.is_available() else False
+            )
             
             # Don't move model when using device_map="auto" - it handles device placement automatically
             if not torch.cuda.is_available():
                 self.model.to(self.device)
             
             self.model.eval()
+            self.logger.info("Nanonets OCR model loaded successfully")
             
+            # Load tokenizer
+            self.logger.info("Loading tokenizer...")
             self.tokenizer = AutoTokenizer.from_pretrained(
                 str(self.model_path),
                 trust_remote_code=True
             )
+            self.logger.info("Tokenizer loaded successfully")
 
-            # Load processor with error handling for potential to_dict() issues
+            # Load processor with comprehensive error handling
+            self.logger.info("Loading processor...")
             try:
                 self.processor = AutoProcessor.from_pretrained(
                     str(self.model_path),
                     trust_remote_code=True
                 )
+                self.logger.info("Processor loaded successfully")
             except Exception as processor_error:
                 self.logger.warning(f"AutoProcessor loading failed: {processor_error}")
                 # Try alternative processor loading
@@ -112,16 +120,46 @@ class NanonetsOCREngine:
                         str(self.model_path),
                         trust_remote_code=True
                     )
+                    self.logger.info("Alternative processor loaded successfully")
                 except Exception as alt_error:
                     self.logger.error(f"Alternative processor loading also failed: {alt_error}")
-                    raise processor_error
+                    raise RuntimeError(f"Failed to load processor: {processor_error}")
             
             self.models_loaded = True
-            self.logger.info("Nanonets OCR model loaded successfully")
+            self.logger.info("Nanonets OCR model and components loaded successfully")
             
         except Exception as e:
             self.logger.error(f"Failed to load Nanonets OCR model: {e}", exc_info=True)
+            # Clean up any partially loaded components
+            self.model = None
+            self.tokenizer = None
+            self.processor = None
+            self.models_loaded = False
             raise RuntimeError(f"Could not load Nanonets OCR model: {e}")
+
+    def _validate_model_files(self) -> bool:
+        """Validate that all required model files exist."""
+        required_files = [
+            "config.json",
+            "tokenizer.json",
+            "vocab.json",
+            "model.safetensors.index.json"
+        ]
+        
+        for file_name in required_files:
+            file_path = self.model_path / file_name
+            if not file_path.exists():
+                self.logger.error(f"Required model file not found: {file_path}")
+                return False
+        
+        # Check for model weights files
+        model_files = list(self.model_path.glob("model-*.safetensors"))
+        if not model_files:
+            self.logger.error(f"No model weight files found in {self.model_path}")
+            return False
+        
+        self.logger.info(f"Model validation passed. Found {len(model_files)} weight files.")
+        return True
 
     async def extract_text(self, image: Image.Image) -> OCRResult:
         """

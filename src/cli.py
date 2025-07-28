@@ -334,12 +334,12 @@ def handle_config(args):
                         "method": "weighted"
                     },
                     "monkey_ocr": {
-                        "api_key": "YOUR_API_KEY",
-                        "endpoint_url": "http://localhost:8000/process"
+                        "api_key": "${MONKEY_OCR_API_KEY}",
+                        "endpoint_url": "${MONKEY_OCR_ENDPOINT_URL:http://localhost:8000/process}"
                     },
                     "nanonets_ocr": {
-                        "api_key": "YOUR_API_KEY",
-                        "model_id": "default"
+                        "api_key": "${NANONETS_OCR_API_KEY}",
+                        "model_id": "${NANONETS_MODEL_ID:default}"
                     }
                 },
                 "extraction": {

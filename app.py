@@ -5,6 +5,24 @@ from PIL import Image
 import json
 import torch
 import logging
+import tempfile
+import os
+def process_pdf(pdf_file):
+    """Convert PDF to images and extract data from each page."""
+    try:
+        # Save uploaded file to temporary file
+        with tempfile.NamedTemporaryFile(delete=False, suffix='.pdf') as tmp_file:
+            tmp_file.write(pdf_file.getbuffer())
+            tmp_path = tmp_file.name
+        
+        try:
+            pages = convert_from_path(tmp_path)
+            results = []
+            for i, page in enumerate(pages): pdf2image import convert_from_path
+from PIL import Image
+import json
+import torch
+import logging
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
@@ -31,8 +49,17 @@ def load_ocr_model():
 def load_extractor_model():
     """Load the data extractor model and tokenizer."""
     try:
-        model = AutoModelForCausalLM.from_pretrained("numind/NuExtract-2.0-8B").to(device)
-        tokenizer = AutoTokenizer.from_pretrained("numind/NuExtract-2.0-8B")
+        from transformers import LlamaConfig
+        config = LlamaConfig.from_pretrained("numind/NuExtract-2.0-8B")
+        model = AutoModelForCausalLM.from_pretrained(
+            "numind/NuExtract-2.0-8B",
+            config=config,
+            trust_remote_code=True
+        ).to(device)
+        tokenizer = AutoTokenizer.from_pretrained(
+            "numind/NuExtract-2.0-8B",
+            trust_remote_code=True
+        )
         logger.info("Extractor model loaded successfully.")
         return model, tokenizer
     except Exception as e:
@@ -119,8 +146,15 @@ def extract_medical_fields(text, model, tokenizer):
 # Process PDF and extract data
 def process_pdf(pdf_file):
     """Convert PDF to images and extract data from each page."""
+    temp_path = None
     try:
-        pages = convert_from_path(pdf_file)
+        # Save uploaded file to temporary file
+        with tempfile.NamedTemporaryFile(delete=False, suffix='.pdf') as tmp_file:
+            tmp_file.write(pdf_file.getbuffer())
+            temp_path = tmp_file.name
+        
+        # Convert PDF pages to images
+        pages = convert_from_path(temp_path)
         results = []
         for i, page in enumerate(pages):
             with st.spinner(f"Extracting text from page {i+1}..."):
@@ -132,6 +166,13 @@ def process_pdf(pdf_file):
     except Exception as e:
         logger.error(f"PDF processing failed: {str(e)}")
         raise
+    finally:
+        # Clean up temporary file
+        if temp_path and os.path.exists(temp_path):
+            try:
+                os.unlink(temp_path)
+            except Exception as e:
+                logger.warning(f"Failed to delete temporary file: {str(e)}")
 
 # Streamlit UI
 def main():
