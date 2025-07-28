@@ -49,35 +49,61 @@ def render_extraction_results(results: ExtractionResults):
         for i, (tab, patient) in enumerate(zip(patient_tabs, results.patients)):
             with tab:
                 _render_patient_data(patient, i)
+                # Add export button for individual patient
+                if st.button(f"Export Patient {i + 1} Data", key=f"export_patient_{i}"):
+                    # Create downloadable JSON
+                    try:
+                        if hasattr(patient, 'to_dict'):
+                            data = patient.to_dict()
+                        else:
+                            data = {
+                                'first_name': patient.first_name,
+                                'last_name': patient.last_name,
+                                'date_of_birth': str(patient.date_of_birth) if patient.date_of_birth else None,
+                                'patient_id': patient.patient_id,
+                                'cpt_codes': [{'code': c.code, 'description': c.description} for c in (patient.cpt_codes or [])],
+                                'icd10_codes': [{'code': i.code, 'description': i.description} for i in (patient.icd10_codes or [])]
+                            }
+                        
+                        import json
+                        json_str = json.dumps(data, indent=2)
+                        st.download_button(
+                            label="Download JSON",
+                            data=json_str,
+                            file_name=f"patient_{i + 1}_data.json",
+                            mime="application/json"
+                        )
+                    except Exception as e:
+                        st.error(f"Export failed: {e}")
     else:
-        _render_patient_data(results.patients[0], 0)
-    
-    # Add export button for individual patient
-    if st.button(f"Export Patient {patient_idx + 1} Data", key=f"export_patient_{patient_idx}"):
-        # Create downloadable JSON
-        try:
-            if hasattr(patient, 'to_dict'):
-                data = patient.to_dict()
-            else:
-                data = {
-                    'first_name': patient.first_name,
-                    'last_name': patient.last_name,
-                    'date_of_birth': str(patient.date_of_birth) if patient.date_of_birth else None,
-                    'patient_id': patient.patient_id,
-                    'cpt_codes': [{'code': c.code, 'description': c.description} for c in (patient.cpt_codes or [])],
-                    'icd10_codes': [{'code': i.code, 'description': i.description} for i in (patient.icd10_codes or [])]
-                }
-            
-            import json
-            json_str = json.dumps(data, indent=2)
-            st.download_button(
-                label="Download JSON",
-                data=json_str,
-                file_name=f"patient_{patient_idx + 1}_data.json",
-                mime="application/json"
-            )
-        except Exception as e:
-            st.error(f"Export failed: {e}")
+        patient = results.patients[0]
+        _render_patient_data(patient, 0)
+        # Add export button for single patient
+        if st.button(f"Export Patient 1 Data", key="export_patient_0"):
+            # Create downloadable JSON
+            try:
+                if hasattr(patient, 'to_dict'):
+                    data = patient.to_dict()
+                else:
+                    data = {
+                        'first_name': patient.first_name,
+                        'last_name': patient.last_name,
+                        'date_of_birth': str(patient.date_of_birth) if patient.date_of_birth else None,
+                        'patient_id': patient.patient_id,
+                        'cpt_codes': [{'code': c.code, 'description': c.description} for c in (patient.cpt_codes or [])],
+                        'icd10_codes': [{'code': i.code, 'description': i.description} for i in (patient.icd10_codes or [])]
+                    }
+                
+                import json
+                json_str = json.dumps(data, indent=2)
+                st.download_button(
+                    label="Download JSON",
+                    data=json_str,
+                    file_name="patient_1_data.json",
+                    mime="application/json"
+                )
+            except Exception as e:
+                st.error(f"Export failed: {e}")
     
     st.markdown("</div>", unsafe_allow_html=True)
 
@@ -155,8 +181,8 @@ def _render_patient_data(patient: PatientData, patient_idx: int):
         try:
             if hasattr(patient, 'to_dict'):
                 st.json(patient.to_dict())
-            elif hasattr(patient, 'model_dump'):
-                st.json(patient.model_dump())
+            elif hasattr(patient, 'to_dict'):
+                st.json(patient.to_dict())
             else:
                 # Fallback for basic patient data
                 import json

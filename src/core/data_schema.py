@@ -137,6 +137,7 @@ class PatientData:
     email: Optional[str] = None
     insurance_id: Optional[str] = None
     insurance_provider: Optional[str] = None
+    date_of_service: Optional[str] = None  # ISO format YYYY-MM-DD
     
     # Fields with default values
     cpt_codes: List['CPTCode'] = field(default_factory=list)
@@ -150,6 +151,7 @@ class PatientData:
     patient_index: int = 0
     validation_errors: List[str] = field(default_factory=list)
     confidences: Dict[str, FieldConfidence] = field(default_factory=dict)
+    financial_info: Optional['FinancialInfo'] = None
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary for serialization."""
@@ -165,6 +167,7 @@ class PatientData:
             "email": self.email,
             "insurance_id": self.insurance_id,
             "insurance_provider": self.insurance_provider,
+            "date_of_service": str(self.date_of_service) if self.date_of_service else None,
             "cpt_codes": [{"code": code.code, "description": code.description, "charge": code.charge} 
                          for code in self.cpt_codes] if self.cpt_codes else [],
             "icd10_codes": [{"code": code.code, "description": code.description} 
@@ -184,6 +187,15 @@ class PatientData:
                     "score": conf.confidence,
                     "model": conf.model_name if conf.model_name else "default"
                 } for field, conf in self.confidences.items()
+            }
+        if self.financial_info:
+            result["financial_info"] = {
+                "total_charges": self.financial_info.total_charges,
+                "insurance_payment": self.financial_info.insurance_payment,
+                "patient_payment": self.financial_info.patient_payment,
+                "balance_due": self.financial_info.balance_due,
+                "copay": self.financial_info.copay,
+                "deductible": self.financial_info.deductible
             }
         return result
 
@@ -236,11 +248,16 @@ class ProviderInfo:
 @dataclass
 class FinancialInfo:
     """Financial information from the document."""
-    total_charge: Optional[float] = None
+    total_charges: Optional[float] = None
+    insurance_payment: Optional[float] = None
+    patient_payment: Optional[float] = None
     insurance_paid: Optional[float] = None
     patient_paid: Optional[float] = None
+    total_charge: Optional[float] = None
     adjustments: Optional[float] = None
     balance_due: Optional[float] = None
+    copay: Optional[float] = None
+    deductible: Optional[float] = None
     confidences: Dict[str, FieldConfidence] = field(default_factory=dict)
 
 

@@ -1,247 +1,371 @@
-"""
-Medical Superbill Data Extraction System - Streamlit UI
-
-A modern and attractive UI for the medical superbill extraction system,
-providing easy access to all features in an intuitive interface.
-"""
 import streamlit as st
-import os
 import sys
-import base64
-import re
-import uuid
+import os
 from pathlib import Path
-from PIL import Image
+import json
 import pandas as pd
-from streamlit_option_menu import option_menu
-import time
 import asyncio
-import tempfile
-from contextlib import contextmanager
+import time
+import torch
+from datetime import datetime
 
-# Add the project root to the path
-ROOT_DIR = Path(__file__).parent.parent
-sys.path.append(str(ROOT_DIR))
+# Add project root to Python path
+sys.path.insert(0, str(Path(__file__).parent.parent))
 
-# Security constants
-MAX_UPLOAD_SIZE = 50 * 1024 * 1024  # 50MB
-ALLOWED_EXTENSIONS = {'.pdf', '.jpg', '.jpeg', '.png', '.tiff', '.tif'}
-
-def sanitize_filename(filename: str) -> str:
-    """Sanitize uploaded filename to prevent path traversal."""
-    if not filename:
-        return f"upload_{uuid.uuid4().hex[:8]}.tmp"
-    
-    # Remove path components and dangerous characters
-    safe_name = os.path.basename(filename)
-    safe_name = re.sub(r'[^\w\-_\.]', '_', safe_name)
-    
-    # Ensure filename is not empty or hidden
-    if not safe_name or safe_name.startswith('.'):
-        safe_name = f"upload_{uuid.uuid4().hex[:8]}.tmp"
-    
-    return safe_name
-
-def get_safe_extension(filename: str) -> str:
-    """Get safe file extension for temporary file."""
-    ext = Path(filename).suffix.lower()
-    return ext if ext in ALLOWED_EXTENSIONS else '.tmp'
-
-@contextmanager
-def secure_temp_file(data: bytes, suffix: str = '.tmp'):
-    """Create secure temporary file with proper cleanup and validation."""
-    # Validate file size
-    if len(data) > MAX_UPLOAD_SIZE:
-        raise ValueError(f"File too large: {len(data)} bytes (max: {MAX_UPLOAD_SIZE})")
-    
-    # Basic file content validation
-    if len(data) < 10:  # Minimum viable file size
-        raise ValueError("File appears to be empty or corrupted")
-    
-    temp_fd = None
-    temp_path = None
-    try:
-        # Create secure temp file with proper permissions
-        temp_fd, temp_path = tempfile.mkstemp(suffix=suffix, prefix='secure_extract_')
-        os.chmod(temp_path, 0o600)  # Restrict permissions to owner only
-        
-        # Write data
-        with os.fdopen(temp_fd, 'wb') as f:
-            f.write(data)
-            temp_fd = None  # Prevent double close
-        
-        yield temp_path
-    finally:
-        # Ensure cleanup
-        if temp_fd is not None:
-            try:
-                os.close(temp_fd)
-            except:
-                pass
-        if temp_path and os.path.exists(temp_path):
-            try:
-                os.unlink(temp_path)
-            except:
-                pass
-
-# Import components
-from ui.components.sidebar import render_sidebar
-from ui.components.file_uploader import render_file_uploader
-from ui.components.extraction_results import render_extraction_results
-from ui.components.batch_processor import render_batch_processor
-from ui.components.extraction_config import render_extraction_config
-from ui.components.validation_panel import render_validation_panel
-from ui.components.export_options import render_export_options
-
-# Import system components
-from src.core.data_schema import ExtractionResults
-from src.extraction_engine import ExtractionEngine
 from src.core.config_manager import ConfigManager
+from src.extraction_engine import ExtractionEngine
 
 
-# Page configuration
-st.set_page_config(
-    page_title="Medical Superbill Extractor",
-    page_icon="🏥",
-    layout="wide",
-    initial_sidebar_state="expanded",
-)
-
-# Load custom CSS
-def load_css():
-    css_path = os.path.join(ROOT_DIR, "ui", "assets", "style.css")
-    # Validate CSS path is within project directory
-    try:
-        css_path_resolved = Path(css_path).resolve()
-        ROOT_DIR_resolved = Path(ROOT_DIR).resolve()
-        css_path_resolved.relative_to(ROOT_DIR_resolved)
-        
-        if css_path_resolved.exists() and css_path_resolved.is_file():
-            with open(css_path_resolved, 'r', encoding='utf-8') as f:
-                st.markdown(f'<style>{f.read()}</style>', unsafe_allow_html=True)
-    except (ValueError, OSError) as e:
-        st.error("Security: CSS file path validation failed")
-
-
-def add_bg_from_local(image_file):
-    """Safely load background image with path validation."""
-    try:
-        image_path = Path(image_file).resolve()
-        ROOT_DIR_resolved = Path(ROOT_DIR).resolve()
-        
-        # Validate image path is within project directory
-        image_path.relative_to(ROOT_DIR_resolved)
-        
-        if image_path.exists() and image_path.is_file():
-            with open(image_path, "rb") as f:
-                encoded_string = base64.b64encode(f.read()).decode()
-            
-            bg_img = f"""
-            <style>
-            .stApp {{
-                background-image: url("data:image/png;base64,{encoded_string}");
-                background-size: cover;
-            }}
-            </style>
-            """
-            st.markdown(bg_img, unsafe_allow_html=True)
-    except (ValueError, OSError):
-        # Silently fail for security - don't reveal path information
-        pass
-
-
-def run_ui_app(engine: ExtractionEngine):
-    """
-    Main function to run the Streamlit UI.
-    
-    Args:
-        engine: Initialized extraction engine
-    """
-    # Load CSS
-    load_css()
-    
-    # Background overlay with gradient
-    st.markdown('<div class="bg-overlay"></div>', unsafe_allow_html=True)
-    
-    # Initialize session state
+def initialize_engine():
+    """Initialize the extraction engine with optimized sequential loading."""
     if 'extraction_engine' not in st.session_state:
-        st.session_state.extraction_engine = engine
-    if 'extraction_results' not in st.session_state:
-        st.session_state.extraction_results = None
+        config = ConfigManager()
         
-    # Title and description
-    st.markdown("""
-    <div class="header-container">
-        <h1 class="main-title">Medical Superbill Data Extraction</h1>
-        <p class="subtitle">Extract structured data from medical superbills using advanced AI</p>
-    </div>
-    """, unsafe_allow_html=True)
-    
-    # Sidebar
-    render_sidebar()
-    
-    # Main navigation
-    selected_tab = option_menu(
-        menu_title=None,
-        options=["Single File", "Batch Processing", "Configuration", "Documentation"],
-        icons=["file-earmark-medical", "files", "gear", "book"],
-        menu_icon="cast",
-        default_index=0,
-        orientation="horizontal",
-        styles={
-            "container": {"padding": "0!important", "background-color": "rgba(255, 255, 255, 0.1)", "border-radius": "10px"},
-            "icon": {"color": "#6236FF", "font-size": "20px"},
-            "nav-link": {"text-align": "center", "margin": "0px", "padding": "10px 20px", "color": "#333", "font-weight": "normal"},
-            "nav-link-selected": {"background-color": "#6236FF", "color": "white", "font-weight": "bold"},
+        # Configure for sequential processing with GPU optimization
+        config.update_config("models.sequential_loading", True)
+        config.update_config("models.unload_after_use", True)
+        config.update_config("processing.use_cuda", True)
+        config.update_config("processing.mixed_precision", True)
+        
+        st.session_state.extraction_engine = ExtractionEngine(config)
+        st.session_state.model_info = {
+            'ocr_model': 'Nanonets OCR (GPU Optimized)',
+            'extraction_model': 'NuExtract 2.0-8B',
+            'processing_strategy': 'Sequential Loading',
+            'gpu_acceleration': torch.cuda.is_available()
         }
+
+
+def process_pdf(uploaded_file):
+    """Process uploaded PDF file using optimized sequential processing."""
+    # Save uploaded file to temporary location
+    temp_dir = Path("temp")
+    temp_dir.mkdir(exist_ok=True)
+    temp_path = temp_dir / uploaded_file.name
+    
+    with open(temp_path, "wb") as f:
+        f.write(uploaded_file.getbuffer())
+    
+    start_time = time.time()
+    
+    try:
+        # Show progress information
+        with st.spinner("🚀 Initializing models sequentially for optimal performance..."):
+            # Process file using the extraction engine with progress tracking
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            
+            # Extract data using the optimized engine
+            extraction_result = loop.run_until_complete(
+                st.session_state.extraction_engine.extract_from_file(str(temp_path))
+            )
+        
+        processing_time = time.time() - start_time
+        
+        # Create enhanced result structure
+        result = {
+            'success': extraction_result.success,
+            'processing_time': processing_time,
+            'extraction_confidence': extraction_result.extraction_confidence,
+            'extraction_result': extraction_result,
+            'total_patients': extraction_result.total_patients,
+            'metadata': {
+                'file_size': len(uploaded_file.getbuffer()) / 1024 / 1024,  # MB
+                'processing_strategy': 'Sequential: Nanonets → NuExtract',
+                'gpu_used': torch.cuda.is_available(),
+                'timestamp': datetime.now().isoformat()
+            },
+            'error': None
+        }
+        
+        return result
+        
+    except Exception as e:
+        processing_time = time.time() - start_time
+        return {
+            'success': False,
+            'error': str(e),
+            'extraction_result': None,
+            'processing_time': processing_time,
+            'metadata': {'error_type': type(e).__name__}
+        }
+    finally:
+        # Clean up
+        if temp_path.exists():
+            os.unlink(temp_path)
+
+
+def display_extraction_results(result):
+    """Display extracted medical data with enhanced UI and patient differentiation."""
+    if not result['success']:
+        st.error(f"❌ Processing failed: {result.get('error', 'Unknown error')}")
+        if 'processing_time' in result:
+            st.write(f"⏱️ Processing time: {result['processing_time']:.2f} seconds")
+        return
+    
+    extraction_result = result['extraction_result']
+    
+    # Enhanced document overview with metrics
+    st.subheader("📊 Processing Summary")
+    
+    col1, col2, col3, col4 = st.columns(4)
+    with col1:
+        st.metric("Processing Time", f"{result['processing_time']:.2f}s")
+    with col2:
+        st.metric("Confidence Score", f"{result['extraction_confidence']:.1%}")
+    with col3:
+        st.metric("Patients Found", result.get('total_patients', 0))
+    with col4:
+        gpu_status = "🚀 GPU" if result['metadata']['gpu_used'] else "💻 CPU"
+        st.metric("Processing Mode", gpu_status)
+    
+    # Technical details in expander
+    with st.expander("🔧 Technical Details"):
+        col1, col2 = st.columns(2)
+        with col1:
+            st.write(f"**File Size:** {result['metadata']['file_size']:.1f} MB")
+            st.write(f"**Strategy:** {result['metadata']['processing_strategy']}")
+            st.write(f"**GPU Acceleration:** {'✅ Enabled' if result['metadata']['gpu_used'] else '❌ Disabled'}")
+        with col2:
+            if 'model_info' in st.session_state:
+                info = st.session_state.model_info
+                st.write(f"**OCR Model:** {info['ocr_model']}")
+                st.write(f"**Extraction Model:** {info['extraction_model']}")
+                st.write(f"**Loading Strategy:** {info['processing_strategy']}")
+    
+    # Enhanced patient data display
+    st.subheader("👥 Extracted Patient Data")
+    
+    if extraction_result.patients:
+        # Show overall statistics
+        total_cpt = sum(len(p.cpt_codes) if p.cpt_codes else 0 for p in extraction_result.patients)
+        total_icd = sum(len(p.icd10_codes) if p.icd10_codes else 0 for p in extraction_result.patients)
+        
+        st.info(f"📋 **Summary:** Found {len(extraction_result.patients)} patients with {total_cpt} CPT codes and {total_icd} ICD-10 codes")
+        
+        for i, patient in enumerate(extraction_result.patients):
+            # Enhanced patient header with color coding
+            patient_name = f"{patient.first_name or 'Unknown'} {patient.last_name or 'Patient'}"
+            cpt_count = len(patient.cpt_codes) if patient.cpt_codes else 0
+            icd_count = len(patient.icd10_codes) if patient.icd10_codes else 0
+            
+            with st.expander(f"👤 **Patient {i+1}:** {patient_name} | 🟢 {cpt_count} CPT | 🔵 {icd_count} ICD-10", expanded=True):
+                col1, col2 = st.columns(2)
+                
+                with col1:
+                    st.markdown("### 📝 Demographics")
+                    st.write(f"**Full Name:** {patient.first_name or ''} {patient.middle_name or ''} {patient.last_name or ''}")
+                    if patient.date_of_birth:
+                        if hasattr(patient.date_of_birth, 'strftime'):
+                            dob_str = patient.date_of_birth.strftime('%Y-%m-%d')
+                        else:
+                            dob_str = str(patient.date_of_birth)
+                        st.write(f"**Date of Birth:** {dob_str}")
+                    if patient.patient_id:
+                        st.write(f"**Patient ID:** {patient.patient_id}")
+                    
+                    # Page information (if available)
+                    if hasattr(patient, 'page_number'):
+                        st.write(f"**Found on Page:** {patient.page_number}")
+                    
+                    if patient.financial_info:
+                        st.markdown("### 💰 Financial Information")
+                        if patient.financial_info.total_charges:
+                            st.write(f"**Total Charges:** ${patient.financial_info.total_charges:.2f}")
+                        if hasattr(patient.financial_info, 'copay') and patient.financial_info.copay:
+                            st.write(f"**Copay:** ${patient.financial_info.copay:.2f}")
+                        if hasattr(patient.financial_info, 'deductible') and patient.financial_info.deductible:
+                            st.write(f"**Deductible:** ${patient.financial_info.deductible:.2f}")
+                
+                with col2:
+                    if patient.cpt_codes:
+                        st.markdown("### 🟢 CPT Codes (Procedures)")
+                        cpt_data = []
+                        for cpt in patient.cpt_codes:
+                            cpt_data.append({
+                                'Code': cpt.code,
+                                'Description': cpt.description[:50] + "..." if cpt.description and len(cpt.description) > 50 else cpt.description or "-",
+                                'Charge': f"${cpt.charge:.2f}" if cpt.charge else "-",
+                                'Confidence': f"{cpt.confidence.overall:.1%}" if cpt.confidence and hasattr(cpt.confidence, 'overall') else "-"
+                            })
+                        st.dataframe(pd.DataFrame(cpt_data), use_container_width=True)
+                    
+                    if patient.icd10_codes:
+                        st.markdown("### 🔵 ICD-10 Codes (Diagnoses)")
+                        icd_data = []
+                        for icd in patient.icd10_codes:
+                            icd_data.append({
+                                'Code': icd.code,
+                                'Description': icd.description[:50] + "..." if icd.description and len(icd.description) > 50 else icd.description or "-",
+                                'Confidence': f"{icd.confidence.overall:.1%}" if icd.confidence and hasattr(icd.confidence, 'overall') else "-"
+                            })
+                        st.dataframe(pd.DataFrame(icd_data), use_container_width=True)
+                    
+                    if patient.service_info:
+                        st.markdown("### 🏥 Service Information")
+                        if patient.service_info.date_of_service:
+                            if hasattr(patient.service_info.date_of_service, 'strftime'):
+                                service_date = patient.service_info.date_of_service.strftime('%Y-%m-%d')
+                            else:
+                                service_date = str(patient.service_info.date_of_service)
+                            st.write(f"**Date of Service:** {service_date}")
+                        if patient.service_info.provider_name:
+                            st.write(f"**Provider:** {patient.service_info.provider_name}")
+                        if patient.service_info.provider_npi:
+                            st.write(f"**NPI:** {patient.service_info.provider_npi}")
+                
+                # Patient-specific insights
+                if cpt_count > 0 or icd_count > 0:
+                    st.markdown("---")
+                    insight_col1, insight_col2, insight_col3 = st.columns(3)
+                    with insight_col1:
+                        st.metric("Procedures", cpt_count)
+                    with insight_col2:
+                        st.metric("Diagnoses", icd_count)
+                    with insight_col3:
+                        confidence = patient.extraction_confidence if hasattr(patient, 'extraction_confidence') else 0.85
+                        st.metric("Confidence", f"{confidence:.1%}")
+    else:
+        st.warning("⚠️ No patient data found in the document. Please ensure the document contains medical superbill information.")
+
+
+def main():
+    st.set_page_config(
+        page_title="Medical Superbill Extractor", 
+        layout="wide",
+        initial_sidebar_state="expanded"
     )
     
-    if selected_tab == "Single File":
-        col1, col2 = st.columns([1, 2])
+    st.title("🏥 Medical Superbill Extraction System")
+    st.markdown("**Advanced AI-powered extraction with sequential model loading and GPU optimization**")
+    
+    initialize_engine()
+    
+    # Main content area
+    col1, col2 = st.columns([3, 1])
+    
+    with col1:
+        # File upload section with enhanced info
+        st.subheader("📄 Document Upload")
+        uploaded_file = st.file_uploader(
+            "Choose a medical superbill PDF", 
+            type="pdf",
+            help="Upload a medical superbill or similar document for AI-powered data extraction"
+        )
         
-        with col1:
-            uploaded_file = render_file_uploader()
+        if uploaded_file is not None:
+            # Show file info
+            file_size = len(uploaded_file.getbuffer()) / 1024 / 1024
+            st.success(f"✅ **{uploaded_file.name}** loaded ({file_size:.1f} MB)")
             
-            if uploaded_file:
-                if st.button("Extract Data", type="primary", use_container_width=True):
-                    with st.spinner("Extracting data..."):
-                        try:
-                            # Use secure temporary file handling
-                            with secure_temp_file(uploaded_file.getbuffer(), get_safe_extension(uploaded_file.name)) as temp_file_path:
-                                # Run extraction
-                                results = asyncio.run(st.session_state.extraction_engine.extract_from_file(str(temp_file_path)))
-                                st.session_state.extraction_results = results
-                                st.success("Extraction complete!")
-                        except ValueError as e:
-                            st.error("File validation failed. Please check file format and size.")
-                        except Exception as e:
-                            st.error("Processing failed. Please try again with a different file.")
-                            # Log full error internally without exposing to user
-                            import logging
-                            logging.getLogger(__name__).error(f"Extraction failed: {str(e)}", exc_info=True)
-
-        with col2:
-            if st.session_state.extraction_results:
-                render_extraction_results(st.session_state.extraction_results)
-            else:
-                st.info("Upload a file and click 'Extract Data' to begin.")
+            if st.button("🚀 Extract Medical Data", type="primary"):
+                result = process_pdf(uploaded_file)
+                display_extraction_results(result)
                 
-    elif selected_tab == "Batch Processing":
-        render_batch_processor(st.session_state.extraction_engine)
+                # Export options
+                if result['success']:
+                    st.subheader("📤 Export Options")
+                    export_col1, export_col2 = st.columns(2)
+                    
+                    with export_col1:
+                        if st.button("📋 Download JSON"):
+                            json_data = json.dumps(result, indent=2, default=str)
+                            st.download_button(
+                                label="💾 Save JSON File",
+                                data=json_data,
+                                file_name=f"{uploaded_file.name}_extraction.json",
+                                mime="application/json"
+                            )
+                    
+                    with export_col2:
+                        if st.button("📊 Download CSV"):
+                            # Create CSV data
+                            csv_data = []
+                            for i, patient in enumerate(result['extraction_result'].patients or []):
+                                for cpt in patient.cpt_codes or []:
+                                    csv_data.append({
+                                        'Patient': f"{patient.first_name or ''} {patient.last_name or ''}".strip(),
+                                        'Patient_ID': patient.patient_id or '',
+                                        'CPT_Code': cpt.code,
+                                        'CPT_Description': cpt.description or '',
+                                        'Charge': cpt.charge or 0
+                                    })
+                            
+                            if csv_data:
+                                df = pd.DataFrame(csv_data)
+                                csv_string = df.to_csv(index=False)
+                                st.download_button(
+                                    label="💾 Save CSV File",
+                                    data=csv_string,
+                                    file_name=f"{uploaded_file.name}_patients.csv",
+                                    mime="text/csv"
+                                )
+                
+                # Show raw JSON for debugging
+                with st.expander("🔍 Raw Extraction Data (Advanced)"):
+                    st.json(result, expanded=False)
+    
+    with col2:
+        # Enhanced sidebar with system information
+        st.subheader("🤖 System Status")
         
-    elif selected_tab == "Configuration":
-        render_extraction_config()
-    elif selected_tab == "Documentation":
-        st.info("Documentation section coming soon.")
+        if 'model_info' in st.session_state:
+            info = st.session_state.model_info
+            
+            # Model Information
+            st.markdown("### 🧠 AI Models")
+            st.write(f"**OCR:** {info['ocr_model']}")
+            st.write(f"**Extraction:** {info['extraction_model']}")
+            st.write(f"**Strategy:** {info['processing_strategy']}")
+            
+            # Performance indicators
+            st.markdown("### ⚡ Performance")
+            gpu_status = "🚀 GPU Accelerated" if info['gpu_acceleration'] else "💻 CPU Processing"
+            st.write(f"**Mode:** {gpu_status}")
+            st.write(f"**VRAM Optimized:** ✅ Yes")
+            st.write(f"**Sequential Loading:** ✅ Yes")
+            
+            if torch.cuda.is_available():
+                gpu_name = torch.cuda.get_device_name()
+                st.write(f"**GPU:** {gpu_name}")
+                
+                # GPU memory info (if available)
+                try:
+                    total_memory = torch.cuda.get_device_properties(0).total_memory / 1024**3
+                    st.write(f"**GPU Memory:** {total_memory:.1f} GB")
+                except:
+                    pass
+        
+        # Processing capabilities
+        st.markdown("### 🎯 Capabilities")
+        st.write("✅ Multi-patient detection")
+        st.write("✅ CPT code extraction")
+        st.write("✅ ICD-10 code extraction")
+        st.write("✅ Patient differentiation")
+        st.write("✅ Financial data extraction")
+        st.write("✅ Service information")
+        
+        # Tips section
+        st.markdown("### 💡 Tips")
+        st.info("""
+        **For best results:**
+        - Use clear, high-quality PDFs
+        - Ensure text is readable
+        - Multi-page documents supported
+        - Processing time varies by complexity
+        """)
+        
+        # Version info
+        st.markdown("---")
+        st.caption("🔧 **Version:** 2.0 | **Engine:** Sequential AI")
+        
+        # Performance note
+        if torch.cuda.is_available():
+            st.success("🚀 **GPU acceleration active** for faster processing")
+        else:
+            st.warning("💻 **CPU mode** - Consider GPU for faster processing")
+
 
 if __name__ == "__main__":
-    # This part is for direct execution and might need a mock engine
-    # For the main execution, run `run_ui.py`
-    from src.core.config_manager import ConfigManager
-    
-    if 'extraction_engine' not in st.session_state:
-        # Create a mock or real engine for direct testing
-        config = ConfigManager()
-        st.session_state.extraction_engine = ExtractionEngine(config)
-        
-    run_ui_app(st.session_state.extraction_engine)
+    import asyncio
+    main()

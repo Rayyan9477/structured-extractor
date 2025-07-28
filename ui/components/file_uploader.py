@@ -5,7 +5,14 @@ import streamlit as st
 import os
 from pathlib import Path
 from PIL import Image
-import magic
+
+# Try to import magic, but fallback gracefully if not available
+try:
+    import magic
+    MAGIC_AVAILABLE = True
+except ImportError:
+    MAGIC_AVAILABLE = False
+    st.warning("⚠️ python-magic not available. Using basic file type detection.")
 
 # Security constants
 MAX_FILE_SIZE = 50 * 1024 * 1024  # 50MB
@@ -39,10 +46,14 @@ class FileValidator:
             return results
         
         # MIME type validation using python-magic for security
-        try:
-            mime_type = magic.from_buffer(file_data, mime=True)
-        except:
-            # Fallback to basic validation if python-magic is not available
+        if MAGIC_AVAILABLE:
+            try:
+                mime_type = magic.from_buffer(file_data, mime=True)
+            except:
+                # Fallback to basic validation if magic fails
+                mime_type = self._guess_mime_type(filename, file_data)
+        else:
+            # Use basic validation if python-magic is not available
             mime_type = self._guess_mime_type(filename, file_data)
         
         if mime_type not in ALLOWED_MIME_TYPES:

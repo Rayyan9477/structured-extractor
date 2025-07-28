@@ -56,17 +56,81 @@ class ExtractionPipeline:
         self._models_loaded = False
         
     async def _initialize_models(self):
-        """Initializes all required models."""
+        """
+        Initialize all required models sequentially to optimize VRAM usage.
+        
+        Sequential Loading Strategy:
+        1. Load Nanonets OCR model first (optimized for GPU)
+        2. Clear GPU cache and optimize memory
+        3. Load NuExtract model second (ensuring optimal memory usage)
+        4. Monitor GPU memory throughout the process
+        """
         if self._models_loaded:
             return
         
-        self.logger.info("Initializing models...")
-        await asyncio.gather(
-            self.ocr_engine.load_models(),
-            self.nuextract_engine.load_model()
-        )
-        self._models_loaded = True
-        self.logger.info("All models initialized.")
+        import torch
+        import gc
+        
+        self.logger.info("🚀 Initializing models sequentially for optimal VRAM usage...")
+        start_time = time.time()
+        
+        # Initial GPU memory status
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+            initial_memory = torch.cuda.memory_allocated() / 1024**3
+            self.logger.info(f"Initial GPU memory: {initial_memory:.2f}GB")
+        
+        try:
+            # Phase 1: Load OCR model (Nanonets)
+            self.logger.info("📄 Phase 1: Loading Nanonets OCR model...")
+            await self.ocr_engine.load_models()
+            
+            if torch.cuda.is_available():
+                ocr_memory = torch.cuda.memory_allocated() / 1024**3
+                self.logger.info(f"✓ OCR model loaded - GPU memory: {ocr_memory:.2f}GB")
+                
+                # Memory optimization after OCR loading
+                torch.cuda.empty_cache()
+                gc.collect()
+            
+            self.logger.info("✅ OCR model (Nanonets) loaded successfully")
+            
+            # Brief pause to stabilize memory
+            await asyncio.sleep(2)
+            
+            # Phase 2: Load extraction model (NuExtract)
+            self.logger.info("🧠 Phase 2: Loading NuExtract model...")
+            await self.nuextract_engine.load_model()
+            
+            if torch.cuda.is_available():
+                final_memory = torch.cuda.memory_allocated() / 1024**3
+                total_used = final_memory - initial_memory
+                self.logger.info(f"✓ NuExtract model loaded - GPU memory: {final_memory:.2f}GB (total used: {total_used:.2f}GB)")
+                
+                # Final memory optimization
+                torch.cuda.empty_cache()
+                gc.collect()
+            
+            self.logger.info("✅ NuExtract model loaded successfully")
+            
+            # Mark as loaded
+            self._models_loaded = True
+            
+            # Final statistics
+            total_time = time.time() - start_time
+            self.logger.info(f"🎉 All models initialized sequentially in {total_time:.2f}s")
+            
+            if torch.cuda.is_available():
+                final_optimized_memory = torch.cuda.memory_allocated() / 1024**3
+                self.logger.info(f"Final optimized GPU memory: {final_optimized_memory:.2f}GB")
+        
+        except Exception as e:
+            self.logger.error(f"❌ Failed to initialize models sequentially: {e}")
+            # Clean up on failure
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+                gc.collect()
+            raise
 
     async def extract_from_file(self, file_path: str) -> ExtractionResults:
         """
@@ -906,7 +970,7 @@ class ExtractionEngine:
                 'total_patients': results.total_patients,
                 'extraction_confidence': results.extraction_confidence,
                 'metadata': results.metadata,
-                'patients': [patient.model_dump() for patient in results.patients]
+                'patients': [patient.to_dict() for patient in results.patients]
             }
             
             with open(output_path, 'w', encoding='utf-8') as f:

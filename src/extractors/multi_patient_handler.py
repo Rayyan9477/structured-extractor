@@ -72,7 +72,10 @@ class PatientBoundaryDetector:
         self.separation_keywords = self.patient_config.get("separation_keywords", [
             "PATIENT", "NAME", "DOB", "ACCOUNT", "CLAIM", "PT", "PATIENT NAME", 
             "PATIENT ID", "MEDICAL RECORD", "MRN", "INSURANCE", "POLICY",
-            "PATIENT INFORMATION", "DEMOGRAPHICS", "DATE OF BIRTH"
+            "PATIENT INFORMATION", "DEMOGRAPHICS", "DATE OF BIRTH",
+            "CPT CODE", "CPT CODES", "PROCEDURE CODE", "PROCEDURE CODES",
+            "ICD", "ICD-10", "ICD10", "DIAGNOSIS CODE", "DIAGNOSIS CODES",
+            "PRIMARY DIAGNOSIS", "SECONDARY DIAGNOSIS", "BILLING CODE"
         ])
         
         # Additional patterns for patient identification
@@ -85,6 +88,21 @@ class PatientBoundaryDetector:
         self.name_patterns = [
             r"(?:PATIENT|PT|NAME)[:.\s]+((?:[A-Z][a-z]+\s+){1,2}[A-Z][a-z]+)",
             r"(?:LAST|FIRST)[:.\s]+((?:[A-Z][a-z]+\s*)+)"
+        ]
+        
+        # Enhanced CPT and ICD-10 code detection patterns
+        self.cpt_code_patterns = [
+            r"(?:CPT|PROCEDURE)[\s#:]*(\d{5})",
+            r"\b(\d{5})\b(?=.*(?:CPT|PROCEDURE|BILLING))",
+            r"(?:CODE|PROC)[\s#:]*(\d{5})",
+            r"\b(\d{5})\s*[-–]\s*[A-Za-z]"  # CPT followed by description
+        ]
+        
+        self.icd10_code_patterns = [
+            r"(?:ICD|DIAGNOSIS)[\s#:-]*([A-Z]\d{2}(?:\.[A-Z0-9]{1,3})?)",
+            r"\b([A-Z]\d{2}(?:\.[A-Z0-9]{1,3})?)\b(?=.*(?:ICD|DIAGNOSIS))",
+            r"(?:DX|DIAG)[\s#:]*([A-Z]\d{2}(?:\.[A-Z0-9]{1,3})?)",
+            r"\b([A-Z]\d{2}(?:\.[A-Z0-9]{1,3})?)\s*[-–]\s*[A-Za-z]"  # ICD followed by description
         ]
         
         # Compile keyword patterns
@@ -125,6 +143,9 @@ class PatientBoundaryDetector:
         
         # Method 5: Line-based detection
         boundaries.extend(self._detect_line_boundaries(text))
+        
+        # Method 6: CPT/ICD code grouping detection (NEW)
+        boundaries.extend(self._detect_code_grouping_boundaries(text))
         
         # Initial validation of boundaries
         validated_boundaries = self._validate_boundaries(boundaries, text)
@@ -355,6 +376,143 @@ class PatientBoundaryDetector:
                     ))
         
         return boundaries
+    
+    def _detect_code_grouping_boundaries(self, text: str) -> List[PatientBoundary]:
+        """
+        Detect patient boundaries based on CPT and ICD-10 code groupings.
+        
+        This method identifies potential patient boundaries by analyzing where
+        clusters of medical codes appear, as different patients typically have
+        distinct sets of codes.
+        
+        Args:
+            text: Input text to analyze
+            
+        Returns:
+            List of detected boundaries based on code patterns
+        """
+        boundaries = []
+        
+        # Find all CPT and ICD codes with their positions
+        code_positions = []
+        
+        # Compile patterns if not already done
+        cpt_patterns = [re.compile(p, re.IGNORECASE) for p in self.cpt_code_patterns]
+        icd_patterns = [re.compile(p, re.IGNORECASE) for p in self.icd10_code_patterns]
+        
+        # Find CPT codes
+        for pattern in cpt_patterns:
+            for match in pattern.finditer(text):
+                code_positions.append({
+                    'type': 'CPT',
+                    'code': match.group(1) if match.groups() else match.group(0),
+                    'start': match.start(),
+                    'end': match.end(),
+                    'match_text': match.group(0)
+                })
+        
+        # Find ICD-10 codes  
+        for pattern in icd_patterns:
+            for match in pattern.finditer(text):
+                code_positions.append({
+                    'type': 'ICD10',
+                    'code': match.group(1) if match.groups() else match.group(0),
+                    'start': match.start(),
+                    'end': match.end(),
+                    'match_text': match.group(0)
+                })
+        
+        # Sort by position
+        code_positions.sort(key=lambda x: x['start'])
+        
+        if len(code_positions) < 4:  # Need at least 4 codes to detect groupings
+            return boundaries
+        
+        # Analyze code clustering
+        clusters = self._cluster_codes_by_proximity(code_positions)
+        
+        # Create boundaries between distinct clusters
+        for i in range(1, len(clusters)):
+            prev_cluster = clusters[i-1]
+            current_cluster = clusters[i]
+            
+            # Calculate distance between clusters
+            cluster_gap = current_cluster[0]['start'] - prev_cluster[-1]['end']
+            
+            # If clusters are sufficiently separated, create a boundary
+            if cluster_gap > 200:  # Minimum gap between patient sections
+                # Look for additional context that suggests a new patient
+                gap_text = text[prev_cluster[-1]['end']:current_cluster[0]['start']]
+                
+                # Check if gap contains patient-related keywords
+                patient_keywords_in_gap = sum(1 for kw in self.separation_keywords 
+                                            if kw.lower() in gap_text.lower())
+                
+                confidence = 0.7  # Base confidence for code clustering
+                if patient_keywords_in_gap > 0:
+                    confidence += 0.2
+                if cluster_gap > 500:  # Large gap increases confidence
+                    confidence += 0.1
+                
+                # Find the best position for the boundary (start of new cluster)
+                boundary_position = current_cluster[0]['start']
+                
+                # Look backward for a good boundary marker
+                search_start = max(0, boundary_position - 100)
+                boundary_context = text[search_start:boundary_position + 50]
+                
+                # Find line breaks or other natural boundaries
+                lines = boundary_context.split('\n')
+                if len(lines) > 1:
+                    # Prefer to place boundary at start of line containing first code
+                    for j, line in enumerate(lines):
+                        if current_cluster[0]['match_text'] in line:
+                            line_start = search_start + sum(len(lines[k]) + 1 for k in range(j))
+                            boundary_position = line_start
+                            break
+                
+                boundaries.append(PatientBoundary(
+                    start_position=boundary_position,
+                    end_position=None,
+                    boundary_type=BoundaryType.PATTERN_REPEAT,
+                    confidence=min(confidence, 1.0),
+                    keywords_found=[f"Code cluster: {len(current_cluster)} codes"],
+                    patient_index=0  # Will be set later
+                ))
+        
+        return boundaries
+    
+    def _cluster_codes_by_proximity(self, code_positions: List[Dict]) -> List[List[Dict]]:
+        """
+        Cluster codes by their proximity in the text.
+        
+        Args:
+            code_positions: List of code position dictionaries
+            
+        Returns:
+            List of code clusters
+        """
+        if not code_positions:
+            return []
+        
+        clusters = [[code_positions[0]]]
+        
+        for i in range(1, len(code_positions)):
+            current_code = code_positions[i]
+            last_cluster = clusters[-1]
+            last_code_in_cluster = last_cluster[-1]
+            
+            # If codes are close together (within 300 characters), add to same cluster
+            if current_code['start'] - last_code_in_cluster['end'] <= 300:
+                last_cluster.append(current_code)
+            else:
+                # Start a new cluster
+                clusters.append([current_code])
+        
+        # Filter out clusters that are too small (less than 2 codes)
+        clusters = [cluster for cluster in clusters if len(cluster) >= 2]
+        
+        return clusters
     
     def _calculate_keyword_confidence(self, keyword: str, context: str) -> float:
         """Calculate confidence for keyword-based boundary detection."""
@@ -851,18 +1009,44 @@ class PatientDataValidator:
         # Validate dates
         if patient_data.date_of_birth:
             from datetime import date
-            if patient_data.date_of_birth > date.today():
-                errors.append("Date of birth is in the future")
+            try:
+                # Convert string date to date object for comparison
+                if isinstance(patient_data.date_of_birth, str):
+                    from datetime import datetime
+                    dob_date = datetime.strptime(patient_data.date_of_birth, '%Y-%m-%d').date()
+                else:
+                    dob_date = patient_data.date_of_birth
+                
+                if dob_date > date.today():
+                    errors.append("Date of birth is in the future")
+            except (ValueError, TypeError) as e:
+                errors.append(f"Invalid date format for date of birth: {patient_data.date_of_birth}")
         
         # Check data consistency
-        if patient_data.service_info and patient_data.service_info.date_of_service:
+        if hasattr(patient_data, 'service_info') and patient_data.service_info and hasattr(patient_data.service_info, 'date_of_service') and patient_data.service_info.date_of_service:
             if patient_data.date_of_birth:
-                # Check if service date is reasonable relative to birth date
-                age_at_service = (patient_data.service_info.date_of_service - patient_data.date_of_birth).days / 365.25
-                if age_at_service < 0:
-                    errors.append("Service date is before birth date")
-                elif age_at_service > 150:
-                    errors.append("Patient age at service is unrealistic")
+                try:
+                    # Convert string dates to date objects for comparison
+                    from datetime import datetime
+                    
+                    if isinstance(patient_data.date_of_birth, str):
+                        dob_date = datetime.strptime(patient_data.date_of_birth, '%Y-%m-%d').date()
+                    else:
+                        dob_date = patient_data.date_of_birth
+                    
+                    if isinstance(patient_data.service_info.date_of_service, str):
+                        service_date = datetime.strptime(patient_data.service_info.date_of_service, '%Y-%m-%d').date()
+                    else:
+                        service_date = patient_data.service_info.date_of_service
+                    
+                    # Check if service date is reasonable relative to birth date
+                    age_at_service = (service_date - dob_date).days / 365.25
+                    if age_at_service < 0:
+                        errors.append("Service date is before birth date")
+                    elif age_at_service > 150:
+                        errors.append("Patient age at service is unrealistic")
+                except (ValueError, TypeError) as e:
+                    errors.append(f"Invalid date format for comparison: {e}")
         
         return len(errors) == 0, errors
     

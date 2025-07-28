@@ -14,3 +14,7 @@ aiohttp>=3.8.0
 fastapi>=0.95.0  # Optional for API server
 uvicorn>=0.22.0  # Optional for API server
 python-multipart>=0.0.6  # Optional for API server
+streamlit>=1.28.0  # Required for UI
+streamlit-option-menu>=0.3.0  # Required for UI navigation
+python-magic>=0.4.27  # Required for file type detection
+pandas>=1.5.0  # Required for data processing in UI

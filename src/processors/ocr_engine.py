@@ -79,23 +79,33 @@ class UnifiedOCREngine(OCRErrorHandler):
         self.resource_manager = ResourceManager(config)
         self.ensemble_manager = OCREnsembleManager(config)
         
-        # Get OCR configuration
+        # Get OCR configuration with sequential processing strategy
         self.ocr_config = self.config.get("ocr", {})
-        self.use_models = self.ocr_config.get("ensemble", {}).get("use_models", ["nanonets_ocr"])
-        self.weights = self.ocr_config.get("ensemble", {}).get("weights", {})
-        self.method = self.ocr_config.get("ensemble", {}).get("method", "best_confidence")
         
-        # Device selection moved to resource manager
-        self.default_device = self._get_device()  # Fallback device
-        self.logger.info(f"Unified OCR engine initialized with default device: {self.default_device}")
+        # Force Nanonets-only processing (no TrOCR fallback)
+        self.use_models = ["nanonets_ocr"]  # Only use Nanonets
+        self.weights = {"nanonets_ocr": 1.0}
+        self.method = "nanonets_only"  # Sequential processing method
         
-        # Engine configuration
+        # Sequential loading configuration
+        self.sequential_loading = self.config.get("models", {}).get("sequential_loading", True)
+        self.unload_after_use = self.config.get("models", {}).get("unload_after_use", True)
+        
+        # Device selection with CUDA optimization
+        self.default_device = self._get_device()
+        self.use_cuda = self.config.get("processing", {}).get("use_cuda", torch.cuda.is_available())
+        self.mixed_precision = self.config.get("processing", {}).get("mixed_precision", True)
+        
+        self.logger.info(f"Sequential OCR engine initialized - Device: {self.default_device}, CUDA: {self.use_cuda}")
+        
+        # Engine configuration (Nanonets only)
         self.engine_configs = {
             "nanonets_ocr": {
                 "type": ModelType.OCR,
                 "priority": ModelPriority.HIGH,
                 "class": NanonetsOCREngine,
-                "sub_models": []
+                "sub_models": [],
+                "gpu_optimized": True
             }
         }
         
@@ -160,66 +170,59 @@ class UnifiedOCREngine(OCRErrorHandler):
 
     async def load_models(self) -> None:
         """
-        Load all configured OCR models with comprehensive error handling
-        and resource management.
+        Load OCR models sequentially to optimize VRAM usage and compute resources.
         
-        Features:
-        1. Parallel loading with controlled concurrency
-        2. Resource-aware loading order
-        3. Smart fallback mechanisms
-        4. Progress tracking and reporting
+        Sequential Loading Strategy:
+        1. Load Nanonets OCR model first (GPU optimized)
+        2. Initialize with CUDA optimizations if available
+        3. Memory-efficient loading with cleanup between models
+        4. Progress tracking and resource monitoring
         """
-        self.logger.info("Loading OCR models...")
+        self.logger.info("Loading OCR models sequentially for optimal VRAM usage...")
         start_time = time.time()
+        
+        # Clear GPU cache before loading
+        if self.use_cuda and torch.cuda.is_available():
+            torch.cuda.empty_cache()
+            self.logger.info("Cleared GPU cache before model loading")
         
         # Track loading progress
         total_count = len(self.engines)
         success_count = 0
         failed_engines = []
         
-        # Determine loading order based on priority
-        loading_order = sorted(
-            self.engines.items(),
-            key=lambda x: self.engine_configs[x[0]]["priority"].value,
-            reverse=True
-        )
-        
-        # Load models with controlled concurrency
-        sem = asyncio.Semaphore(2)  # Load up to 2 models at once
-        
-        async def load_engine(engine_name: str, engine_class) -> bool:
-            async with sem:
-                try:
-                    return await self._load_engine_safely(engine_name, engine_class)
-                except Exception as e:
-                    error = self.handle_error(
-                        e,
-                        context=f"Loading {engine_name}",
-                        error_type=OCRErrorType.MODEL_LOADING
-                    )
-                    return False
-        
-        # Create loading tasks
-        load_tasks = [
-            load_engine(name, engine)
-            for name, engine in loading_order
-        ]
-        
-        # Process loading results
-        results = await asyncio.gather(*load_tasks, return_exceptions=True)
-        
-        for (engine_name, _), success in zip(loading_order, results):
-            if isinstance(success, bool) and success:
-                success_count += 1
-                self.logger.info(f"{engine_name} loaded successfully")
-            else:
+        # Sequential loading (Nanonets only for now)
+        for engine_name, engine in self.engines.items():
+            self.logger.info(f"Loading {engine_name} (sequential mode)...")
+            
+            try:
+                # Load engine with GPU optimization
+                success = await self._load_engine_safely_sequential(engine_name, engine)
+                
+                if success:
+                    success_count += 1
+                    self.logger.info(f"✓ {engine_name} loaded successfully with GPU optimization")
+                    
+                    # Memory optimization after loading
+                    if self.use_cuda and torch.cuda.is_available():
+                        allocated = torch.cuda.memory_allocated() / 1024**3
+                        reserved = torch.cuda.memory_reserved() / 1024**3
+                        self.logger.info(f"GPU Memory after {engine_name}: {allocated:.2f}GB allocated, {reserved:.2f}GB reserved")
+                else:
+                    failed_engines.append(engine_name)
+                    self.logger.error(f"✗ {engine_name} failed to load")
+                
+                # Brief pause between model loads
+                await asyncio.sleep(1)
+                
+            except Exception as e:
                 failed_engines.append(engine_name)
-                self.logger.error(f"{engine_name} failed to load")
+                self.logger.error(f"✗ Error loading {engine_name}: {e}")
         
         # Log final status
         processing_time = time.time() - start_time
         self.logger.info(
-            f"Model loading completed in {processing_time:.1f}s. "
+            f"Sequential model loading completed in {processing_time:.1f}s. "
             f"Loaded: {success_count}/{total_count}"
         )
         
@@ -228,9 +231,14 @@ class UnifiedOCREngine(OCRErrorHandler):
             if success_count == 0:
                 raise RuntimeError("All OCR engines failed to load")
             else:
-                self.logger.warning("Continuing with reduced model availability")
-                
-        # Ensemble manager is already initialized - no additional setup needed
+                self.logger.warning("Continuing with available models")
+        
+        # Final GPU memory optimization
+        if self.use_cuda and torch.cuda.is_available():
+            torch.cuda.empty_cache()
+            gc.collect()
+            final_allocated = torch.cuda.memory_allocated() / 1024**3
+            self.logger.info(f"Final GPU memory usage: {final_allocated:.2f}GB")
 
     async def _load_engine_safely(self, engine_name: str, engine_class) -> bool:
         """
@@ -321,6 +329,74 @@ class UnifiedOCREngine(OCRErrorHandler):
             # Clean up any partial loading
             if engine_name in self.engines:
                 del self.engines[engine_name]
+            
+            return False
+    
+    async def _load_engine_safely_sequential(self, engine_name: str, engine_class) -> bool:
+        """
+        Load an engine safely using sequential loading strategy with GPU optimization.
+        
+        Args:
+            engine_name: Name of the engine to load
+            engine_class: Class of the engine to instantiate
+            
+        Returns:
+            bool: True if engine loaded successfully, False otherwise
+        """
+        config = self.engine_configs.get(engine_name)
+        if not config:
+            self.logger.error(f"No configuration found for engine {engine_name}")
+            return False
+        
+        try:
+            self.logger.info(f"Sequential loading: {engine_name} with GPU optimization...")
+            engine = self.engines.get(engine_name) or engine_class(self.config)
+            
+            # Configure GPU optimization for the engine
+            if self.use_cuda and hasattr(engine, 'device'):
+                engine.device = "cuda"
+                if self.mixed_precision and hasattr(engine, 'use_mixed_precision'):
+                    engine.use_mixed_precision = True
+                    self.logger.info(f"Enabled mixed precision for {engine_name}")
+            
+            # Load models with memory monitoring
+            if hasattr(engine, 'load_models'):
+                if self.use_cuda and torch.cuda.is_available():
+                    # Clear cache before loading this engine
+                    torch.cuda.empty_cache()
+                    before_memory = torch.cuda.memory_allocated() / 1024**3
+                    
+                    await engine.load_models()
+                    
+                    after_memory = torch.cuda.memory_allocated() / 1024**3
+                    memory_used = after_memory - before_memory
+                    self.logger.info(f"{engine_name} memory usage: {memory_used:.2f}GB")
+                else:
+                    await engine.load_models()
+                
+                # Validate that models are loaded
+                if hasattr(engine, 'models_loaded') and not engine.models_loaded:
+                    raise RuntimeError(f"Engine {engine_name} failed to load models properly")
+                
+                # Store loaded engine
+                self.engines[engine_name] = engine
+                self.logger.info(f"✓ {engine_name} loaded and validated successfully")
+                
+                return True
+            else:
+                self.logger.error(f"Engine {engine_name} does not have required load_models method")
+                return False
+                
+        except Exception as e:
+            self.logger.error(f"Failed to load {engine_name} sequentially: {e}")
+            
+            # Clean up any partial loading
+            if engine_name in self.engines:
+                del self.engines[engine_name]
+            
+            # Clean up GPU memory
+            if self.use_cuda and torch.cuda.is_available():
+                torch.cuda.empty_cache()
             
             return False
 

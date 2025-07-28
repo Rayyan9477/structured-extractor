@@ -45,7 +45,16 @@ class NanonetsOCREngine:
         self.device = self._get_device()
         self.max_new_tokens = 15000  # Large context for complex documents
         
-        self.logger.info(f"Nanonets OCR engine initialized with device: {self.device}")
+        # GPU optimization settings
+        self.use_cuda = torch.cuda.is_available()
+        self.use_mixed_precision = getattr(self, 'use_mixed_precision', False)
+        self.cuda_optimization = self.config.get("processing", {}).get("use_cuda", self.use_cuda)
+        
+        # Memory optimization settings
+        self.gradient_checkpointing = True if self.use_cuda else False
+        self.flash_attention = True if self.use_cuda else False
+        
+        self.logger.info(f"Nanonets OCR engine initialized - Device: {self.device}, CUDA: {self.use_cuda}, Mixed Precision: {self.use_mixed_precision}")
         
         # Model components
         self.model = None
@@ -78,22 +87,72 @@ class NanonetsOCREngine:
             raise RuntimeError(f"Nanonets OCR model files not found or incomplete at {self.model_path}")
         
         try:
-            # Load the model for Vision2Seq tasks with proper error handling
-            self.logger.info("Loading Nanonets OCR model...")
+            # GPU memory optimization before loading
+            if self.use_cuda and self.cuda_optimization:
+                torch.cuda.empty_cache()
+                initial_memory = torch.cuda.memory_allocated() / 1024**3
+                self.logger.info(f"GPU memory before model loading: {initial_memory:.2f}GB")
+            
+            # Load the model for Vision2Seq tasks with GPU optimizations
+            self.logger.info("Loading Nanonets OCR model with GPU optimizations...")
+            
+            # Determine optimal data type and device configuration
+            if self.use_cuda and self.cuda_optimization:
+                torch_dtype = torch.bfloat16 if self.use_mixed_precision else torch.float16
+                device_map = "auto"
+                low_cpu_mem_usage = True
+                attn_implementation = "flash_attention_2" if self.flash_attention else None
+            else:
+                torch_dtype = torch.float32
+                device_map = None
+                low_cpu_mem_usage = False
+                attn_implementation = None
+            
+            # Load model with optimized settings
+            model_kwargs = {
+                "torch_dtype": torch_dtype,
+                "device_map": device_map,
+                "trust_remote_code": True,
+                "low_cpu_mem_usage": low_cpu_mem_usage
+            }
+            
+            # Add attention implementation if available
+            if attn_implementation:
+                try:
+                    model_kwargs["attn_implementation"] = attn_implementation
+                except Exception as e:
+                    self.logger.warning(f"Flash attention not available, falling back to default: {e}")
+            
             self.model = AutoModelForVision2Seq.from_pretrained(
                 str(self.model_path),
-                torch_dtype=torch.bfloat16 if torch.cuda.is_available() else torch.float32,
-                device_map="auto" if torch.cuda.is_available() else None,
-                trust_remote_code=True,
-                low_cpu_mem_usage=True if torch.cuda.is_available() else False
+                **model_kwargs
             )
             
+            # Configure model for inference optimization
+            if self.use_cuda and self.cuda_optimization:
+                # Enable gradient checkpointing for memory efficiency
+                if self.gradient_checkpointing and hasattr(self.model, 'gradient_checkpointing_enable'):
+                    self.model.gradient_checkpointing_enable()
+                
+                # Enable compilation if available (PyTorch 2.0+)
+                if hasattr(torch, 'compile') and torch.__version__ >= "2.0":
+                    try:
+                        self.model = torch.compile(self.model, mode="reduce-overhead")
+                        self.logger.info("Model compiled with torch.compile for optimization")
+                    except Exception as e:
+                        self.logger.warning(f"Torch compile failed, continuing without: {e}")
+                
+                # Log memory usage after loading
+                final_memory = torch.cuda.memory_allocated() / 1024**3
+                memory_used = final_memory - initial_memory
+                self.logger.info(f"Model loaded - GPU memory: {final_memory:.2f}GB (used: {memory_used:.2f}GB)")
+            
             # Don't move model when using device_map="auto" - it handles device placement automatically
-            if not torch.cuda.is_available():
+            if not self.use_cuda or not device_map:
                 self.model.to(self.device)
             
             self.model.eval()
-            self.logger.info("Nanonets OCR model loaded successfully")
+            self.logger.info("✅ Nanonets OCR model loaded with GPU optimizations")
             
             # Load tokenizer
             self.logger.info("Loading tokenizer...")
@@ -240,14 +299,30 @@ class NanonetsOCREngine:
             )
             inputs = inputs.to(self.model.device)
             
-            # Generate output
-            with torch.no_grad():
-                output_ids = self.model.generate(
-                    **inputs, 
-                    max_new_tokens=self.max_new_tokens, 
-                    do_sample=False,
-                    pad_token_id=self.tokenizer.eos_token_id
-                )
+            # Generate output with GPU optimization
+            generation_kwargs = {
+                "max_new_tokens": self.max_new_tokens,
+                "do_sample": False,
+                "pad_token_id": self.tokenizer.eos_token_id,
+                "use_cache": True,  # Enable KV caching for faster generation
+            }
+            
+            # Add GPU-specific optimizations
+            if self.use_cuda and self.cuda_optimization:
+                # Enable mixed precision inference if available
+                if self.use_mixed_precision:
+                    with torch.cuda.amp.autocast():
+                        with torch.no_grad():
+                            output_ids = self.model.generate(**inputs, **generation_kwargs)
+                else:
+                    with torch.no_grad():
+                        output_ids = self.model.generate(**inputs, **generation_kwargs)
+                
+                # Clear GPU cache after generation
+                torch.cuda.empty_cache()
+            else:
+                with torch.no_grad():
+                    output_ids = self.model.generate(**inputs, **generation_kwargs)
             
             # Extract only the generated tokens
             generated_ids = [

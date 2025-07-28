@@ -267,7 +267,7 @@ class JSONExporter:
     
     def _patient_to_dict(self, patient: PatientData) -> Dict[str, Any]:
         """Convert patient data to dictionary."""
-        return patient.model_dump()
+        return patient.to_dict()
     
     def _json_serializer(self, obj):
         """Custom JSON serializer for datetime objects."""
