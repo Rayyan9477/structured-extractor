@@ -5,19 +5,16 @@ Integrates the Nanonets OCR model for advanced document understanding and text e
 Uses the downloaded local model from nanonets/Nanonets-OCR-s.
 """
 
-import asyncio
 import torch
 import time
-from typing import List, Dict, Any, Optional
+from typing import List, Dict
 from PIL import Image
-import base64
-import io
 from pathlib import Path
 
 from transformers import AutoTokenizer, AutoProcessor, AutoModelForVision2Seq
 from src.core.config_manager import ConfigManager
 from src.core.logger import get_logger
-from src.core.data_schema import OCRResult, FieldConfidence
+from src.core.data_schema import OCRResult
 
 
 class NanonetsOCREngine:
@@ -43,16 +40,16 @@ class NanonetsOCREngine:
         self.model_path = Path(self.config.get_model_path(self.model_name))
         
         self.device = self._get_device()
-        self.max_new_tokens = 15000  # Large context for complex documents
+        self.max_new_tokens = 1024  # Significantly reduced for faster processing
         
         # GPU optimization settings
         self.use_cuda = torch.cuda.is_available()
-        self.use_mixed_precision = getattr(self, 'use_mixed_precision', False)
+        self.use_mixed_precision = getattr(self, 'use_mixed_precision', True)  # Enable by default
         self.cuda_optimization = self.config.get("processing", {}).get("use_cuda", self.use_cuda)
         
         # Memory optimization settings
-        self.gradient_checkpointing = True if self.use_cuda else False
-        self.flash_attention = True if self.use_cuda else False
+        self.gradient_checkpointing = False  # Disable for speed
+        self.flash_attention = False  # Disable FlashAttention2 by default
         
         self.logger.info(f"Nanonets OCR engine initialized - Device: {self.device}, CUDA: {self.use_cuda}, Mixed Precision: {self.use_mixed_precision}")
         
@@ -190,11 +187,21 @@ class NanonetsOCREngine:
         except Exception as e:
             self.logger.error(f"Failed to load Nanonets OCR model: {e}", exc_info=True)
             # Clean up any partially loaded components
+            # Clean up resources
+            if self.model:
+                try:
+                    del self.model
+                    if torch.cuda.is_available():
+                        torch.cuda.empty_cache()
+                except:
+                    pass
             self.model = None
             self.tokenizer = None
             self.processor = None
             self.models_loaded = False
-            raise RuntimeError(f"Could not load Nanonets OCR model: {e}")
+            error_msg = f"Could not load Nanonets OCR model: {str(e)}"
+            self.logger.error(error_msg, exc_info=True)
+            raise RuntimeError(error_msg)
 
     def _validate_model_files(self) -> bool:
         """Validate that all required model files exist."""
@@ -239,8 +246,8 @@ class NanonetsOCREngine:
         start_time = time.time()
         
         try:
-            # Prepare the prompt for medical document processing
-            prompt = """Extract the text from the above document as if you were reading it naturally. Return the tables in html format. Return the equations in LaTeX representation. If there is an image in the document and image caption is not present, add a small description of the image inside the <img></img> tag; otherwise, add the image caption inside <img></img>. Watermarks should be wrapped in brackets. Ex: <watermark>OFFICIAL COPY</watermark>. Page numbers should be wrapped in brackets. Ex: <page_number>14</page_number> or <page_number>9/22</page_number>. Prefer using ☐ and ☑ for check boxes. Focus on medical terminology, codes, patient information, and billing details."""
+            # Prepare a concise prompt for faster processing
+            prompt = """Extract all text from this medical document. Focus on patient names, dates, medical codes (CPT/ICD), and billing information. Return plain text preserving structure."""
             
             # Prepare messages in the correct format
             messages = [
@@ -259,8 +266,8 @@ class NanonetsOCREngine:
                 text = self.processor.apply_chat_template(
                     messages, tokenize=False, add_generation_prompt=True
                 )
-            except AttributeError as e:
-                # Handle the case where to_dict() is not available
+            except (AttributeError, TypeError, ValueError) as e:
+                # Handle multiple template processing errors
                 self.logger.warning(f"apply_chat_template failed: {e}, using fallback method")
                 
                 # Try direct attribute access or create a dictionary manually
@@ -290,28 +297,34 @@ class NanonetsOCREngine:
                     self.logger.warning(f"Direct attribute access failed: {direct_err}, using hardcoded template")
                     text = f"<|im_start|>system\nYou are a helpful assistant specialized in medical document processing.<|im_end|>\n<|im_start|>user\n{prompt}<|im_end|>\n<|im_start|>assistant\n"
             
-            # Process image and text
-            inputs = self.processor(
-                text=[text], 
-                images=[image], 
-                padding=True, 
-                return_tensors="pt"
-            )
-            inputs = inputs.to(self.model.device)
+            # Process image and text with error handling
+            try:
+                inputs = self.processor(
+                    text=[text], 
+                    images=[image], 
+                    padding=True, 
+                    return_tensors="pt"
+                )
+                inputs = inputs.to(self.model.device)
+            except (RuntimeError, ValueError, TypeError) as e:
+                self.logger.error(f"Input processing failed: {e}")
+                raise RuntimeError(f"Failed to process inputs for OCR: {e}") from e
             
-            # Generate output with GPU optimization
+            # Generate output with GPU optimization and speed improvements
             generation_kwargs = {
                 "max_new_tokens": self.max_new_tokens,
                 "do_sample": False,
                 "pad_token_id": self.tokenizer.eos_token_id,
                 "use_cache": True,  # Enable KV caching for faster generation
+                "num_beams": 1,  # Use greedy decoding for speed
+                "early_stopping": True,  # Stop early when possible
             }
             
             # Add GPU-specific optimizations
             if self.use_cuda and self.cuda_optimization:
                 # Enable mixed precision inference if available
                 if self.use_mixed_precision:
-                    with torch.cuda.amp.autocast():
+                    with torch.amp.autocast('cuda'):
                         with torch.no_grad():
                             output_ids = self.model.generate(**inputs, **generation_kwargs)
                 else:

@@ -80,19 +80,100 @@ class ResourceManager:
         self._models: Dict[str, ModelResource] = {}
         self._device_allocations: Dict[str, Set[str]] = {}
         
+        # Memory tracking for leak detection
+        self._memory_history = []
+        self._memory_check_interval = 60  # 1 minute
+        self._max_memory_history = 60  # Keep 1 hour of history
+        
+        # Initialize memory tracking
+        self._track_initial_memory()
+        
         # Start monitoring task
         self._start_monitoring()
+    
+    def _track_initial_memory(self):
+        """Track initial memory state for leak detection."""
+        try:
+            cpu_memory = psutil.Process().memory_info().rss
+            gpu_memory = None
+            if torch.cuda.is_available():
+                gpu_memory = torch.cuda.memory_allocated()
+            
+            self._memory_history.append({
+                'timestamp': time.time(),
+                'cpu_memory': cpu_memory,
+                'gpu_memory': gpu_memory
+            })
+            
+        except Exception as e:
+            self.logger.warning(f"Failed to track initial memory state: {e}")
+    
+    def _check_for_memory_leaks(self):
+        """Check for potential memory leaks based on history."""
+        if len(self._memory_history) < 2:
+            return
+        
+        try:
+            # Calculate memory growth rate
+            current = self._memory_history[-1]
+            oldest = self._memory_history[0]
+            time_diff = current['timestamp'] - oldest['timestamp']
+            
+            if time_diff < 60:  # Need at least 1 minute of history
+                return
+            
+            # Check CPU memory growth
+            if current['cpu_memory'] and oldest['cpu_memory']:
+                cpu_growth = current['cpu_memory'] - oldest['cpu_memory']
+                cpu_growth_rate = cpu_growth / time_diff
+                
+                if cpu_growth_rate > 1024 * 1024 * 10:  # More than 10MB/s growth
+                    self.logger.warning(
+                        f"Potential CPU memory leak detected! "
+                        f"Growth rate: {cpu_growth_rate / 1024 / 1024:.2f} MB/s"
+                    )
+            
+            # Check GPU memory growth
+            if (current['gpu_memory'] is not None and 
+                oldest['gpu_memory'] is not None):
+                gpu_growth = current['gpu_memory'] - oldest['gpu_memory']
+                gpu_growth_rate = gpu_growth / time_diff
+                
+                if gpu_growth_rate > 1024 * 1024 * 10:  # More than 10MB/s growth
+                    self.logger.warning(
+                        f"Potential GPU memory leak detected! "
+                        f"Growth rate: {gpu_growth_rate / 1024 / 1024:.2f} MB/s"
+                    )
+            
+        except Exception as e:
+            self.logger.error(f"Error checking for memory leaks: {e}")
     
     def _start_monitoring(self):
         """Start background monitoring tasks."""
         async def monitor_resources():
+            last_memory_check = 0
+            
             while True:
                 try:
+                    # Regular resource checks
                     await self._check_memory_usage()
                     await self._cleanup_idle_models()
+                    
+                    # Memory tracking for leak detection
+                    current_time = time.time()
+                    if current_time - last_memory_check >= self._memory_check_interval:
+                        self._track_initial_memory()  # Add current memory state to history
+                        self._check_for_memory_leaks()  # Check for potential leaks
+                        
+                        # Trim memory history
+                        if len(self._memory_history) > self._max_memory_history:
+                            self._memory_history = self._memory_history[-self._max_memory_history:]
+                        
+                        last_memory_check = current_time
+                    
                     await asyncio.sleep(self.cleanup_interval)
                 except Exception as e:
-                    self.logger.error(f"Error in resource monitoring: {e}")
+                    self.logger.error(f"Error in resource monitoring: {e}", exc_info=True)
         
         try:
             # Try to create the task if there's a running event loop
@@ -128,15 +209,43 @@ class ResourceManager:
     
     async def _emergency_cleanup(self):
         """Aggressive cleanup during critical memory pressure."""
-        # Unload all non-critical models
-        for model_id, resource in list(self._models.items()):
-            if resource.priority != ModelPriority.CRITICAL:
-                await self.unload_model(model_id)
-        
-        # Force garbage collection
-        gc.collect()
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
+        self.logger.warning("Performing emergency cleanup of model resources")
+        try:
+            # Create a copy of models to avoid modification during iteration
+            models_to_unload = [(model_id, resource) for model_id, resource 
+                              in self._models.items() 
+                              if resource.priority != ModelPriority.CRITICAL]
+            
+            # Unload all non-critical models
+            for model_id, _ in models_to_unload:
+                try:
+                    await self.unload_model(model_id)
+                except Exception as e:
+                    self.logger.error(f"Error unloading model {model_id} during emergency cleanup: {e}")
+            
+            # Force garbage collection
+            try:
+                gc.collect()
+            except Exception as e:
+                self.logger.error(f"Error during garbage collection: {e}")
+                
+            # Clear CUDA cache if available
+            if torch.cuda.is_available():
+                try:
+                    torch.cuda.empty_cache()
+                    torch.cuda.synchronize()  # Ensure all CUDA operations are complete
+                except Exception as e:
+                    self.logger.error(f"Error clearing CUDA cache: {e}")
+                    
+            # Check if cleanup was successful
+            memory = psutil.virtual_memory()
+            if memory.percent > self.memory_critical:
+                self.logger.error(f"Emergency cleanup failed to reduce memory usage: {memory.percent}%")
+            else:
+                self.logger.info(f"Emergency cleanup successful. Memory usage: {memory.percent}%")
+                
+        except Exception as e:
+            self.logger.error(f"Emergency cleanup failed: {e}", exc_info=True)
     
     async def _selective_cleanup(self):
         """Selectively unload models based on priority and idle time."""
@@ -256,22 +365,57 @@ class ResourceManager:
         
         try:
             # Clear from device
-            if hasattr(resource.model, 'cpu'):
-                resource.model.cpu()
+            if resource.model is not None:
+                try:
+                    # Move to CPU if possible
+                    if hasattr(resource.model, 'cpu'):
+                        resource.model.cpu()
+                    
+                    # Clear CUDA memory if using GPU
+                    if hasattr(resource.model, 'to'):
+                        resource.model.to('cpu')
+                    
+                    # Delete model reference
+                    del resource.model
+                except Exception as e:
+                    self.logger.warning(f"Error moving model to CPU: {e}")
             
             # Remove from device tracking
             if resource.device in self._device_allocations:
-                self._device_allocations[resource.device].discard(model_id)
+                try:
+                    self._device_allocations[resource.device].discard(model_id)
+                except Exception as e:
+                    self.logger.warning(f"Error updating device allocations: {e}")
             
-            # Clear model reference
-            del self._models[model_id]
+            # Clear model reference from registry
+            try:
+                del self._models[model_id]
+            except Exception as e:
+                self.logger.warning(f"Error removing model from registry: {e}")
             
-            # Force cleanup
-            if torch.cuda.is_available() and resource.device.startswith('cuda'):
-                torch.cuda.empty_cache()
+            # Force cleanup with proper error handling
+            try:
+                if torch.cuda.is_available() and resource.device.startswith('cuda'):
+                    device_id = int(resource.device.split(':')[1])
+                    torch.cuda.empty_cache()
+                    torch.cuda.synchronize(device_id)
+            except Exception as e:
+                self.logger.warning(f"Error clearing CUDA cache: {e}")
             
-            # Force garbage collection
-            gc.collect()
+            try:
+                gc.collect()
+            except Exception as e:
+                self.logger.warning(f"Error during garbage collection: {e}")
+            
+            self.logger.info(f"Successfully unloaded model {model_id}")
+            
+        except Exception as e:
+            self.logger.error(f"Error during model unloading: {e}", exc_info=True)
+            # Even if unloading fails, try to remove from registry
+            try:
+                del self._models[model_id]
+            except:
+                pass
                 
         except Exception as e:
             self.logger.error(f"Error unloading model {model_id}: {e}")
@@ -325,7 +469,7 @@ class ResourceManager:
         
         return 0
     
-    async def _ensure_memory_available(self, model_type: ModelType, device: str):
+    async def _ensure_memory_available(self, model_type, device: str):
         """Ensure sufficient memory is available for model loading."""
         try:
             # Get current memory usage

@@ -689,7 +689,6 @@ class EnhancedSuperbillProcessor:
         # Define comprehensive model configurations
         model_configs = [
             {
-            {
                 'name': 'TrOCR_Large_Printed_NuExtract',
                 'ocr_model': 'microsoft/trocr-large-printed',
                 'extraction_model': 'numind/NuExtract-2.0-8B'

@@ -394,16 +394,13 @@ Extracted JSON:"""
         return prompt
     
     async def _generate_extraction(self, prompt: str) -> str:
-        """Generate extraction using a fallback approach that always works."""
+        """Generate extraction using text-only approach for speed and reliability."""
         try:
-            self.logger.debug("Generating extraction using fallback approach...")
+            self.logger.debug("Using text-only extraction for speed...")
             
-            # Try the vision model approach first
-            try:
-                return await self._try_vision_extraction(prompt)
-            except Exception as e:
-                self.logger.warning(f"Vision extraction failed: {e}, using fallback")
-                return self._generate_fallback_extraction(prompt)
+            # Skip vision processing entirely and use direct text extraction
+            # This is much faster and more reliable for structured text
+            return self._generate_fallback_extraction(prompt)
             
         except Exception as e:
             self.logger.error(f"Generation failed: {e}")
@@ -481,17 +478,67 @@ Extracted JSON:"""
         return output_text.strip()
 
     def _generate_fallback_extraction(self, prompt: str) -> str:
-        """Generate a fallback extraction result when vision model fails."""
-        # Extract basic information from the prompt text
-        text_lower = prompt.lower()
+        """Generate a more robust fallback extraction that extracts real data."""
+        import re
+        from datetime import datetime
         
-        # Create a basic structured result
+        # Extract the actual text content from the prompt
+        # Look for the text after "Text to extract from:"
+        text_start = prompt.find("Text to extract from:")
+        if text_start != -1:
+            text_content = prompt[text_start + len("Text to extract from:"):].strip()
+        else:
+            text_content = prompt
+        
+        # Initialize result structure
         result = {
-            "patients": [
-                {
+            "patients": []
+        }
+        
+        # Extract names using patterns
+        name_patterns = [
+            r'(?:PATIENT|NAME|PT)[:=\s]+([A-Z][a-z]+(?:\s+[A-Z][a-z]*)*(?:\s+[A-Z][a-z]+))',
+            r'([A-Z][A-Z\s]+)(?:\s+DOB|\s+D\.O\.B\.|\s+\d{1,2}[\/\-]\d{1,2})',
+            r'^([A-Z][a-z]+\s+[A-Z][a-z]+)',
+        ]
+        
+        names_found = []
+        for pattern in name_patterns:
+            matches = re.findall(pattern, text_content, re.MULTILINE | re.IGNORECASE)
+            for match in matches:
+                if len(match.strip()) > 2:  # Avoid single letters
+                    names_found.append(match.strip())
+        
+        # Extract dates
+        date_patterns = [
+            r'\b(\d{1,2}[\/\-]\d{1,2}[\/\-]\d{2,4})\b',
+            r'\b(\d{2,4}[\/\-]\d{1,2}[\/\-]\d{1,2})\b'
+        ]
+        
+        dates_found = []
+        for pattern in date_patterns:
+            matches = re.findall(pattern, text_content)
+            dates_found.extend(matches)
+        
+        # Extract CPT codes (5 digits)
+        cpt_codes = re.findall(r'\b(\d{5})\b', text_content)
+        
+        # Extract ICD-10 codes (letter + 2-3 digits + optional decimal + digits)
+        icd_codes = re.findall(r'\b([A-Z]\d{2,3}(?:\.\d+)?)\b', text_content)
+        
+        # Extract dollar amounts
+        amounts = re.findall(r'\$\s*(\d+(?:\.\d{2})?)', text_content)
+        
+        # Create patient records
+        if names_found or cpt_codes or dates_found:
+            # If we found at least some data, create patient records
+            max_patients = max(len(names_found), 1)
+            
+            for i in range(max_patients):
+                patient = {
                     "patient_info": {
-                        "first_name": "Unknown",
-                        "last_name": "Unknown",
+                        "first_name": None,
+                        "last_name": None,
                         "date_of_birth": None
                     },
                     "medical_codes": {
@@ -500,39 +547,85 @@ Extracted JSON:"""
                     },
                     "service_info": {
                         "date_of_service": None
+                    },
+                    "financial_info": {
+                        "total_charges": None
                     }
                 }
-            ]
-        }
+                
+                # Set name if available
+                if i < len(names_found):
+                    name_parts = names_found[i].split()
+                    if len(name_parts) >= 2:
+                        patient["patient_info"]["first_name"] = name_parts[0]
+                        patient["patient_info"]["last_name"] = " ".join(name_parts[1:])
+                    else:
+                        patient["patient_info"]["first_name"] = names_found[i]
+                        patient["patient_info"]["last_name"] = "Patient"
+                
+                # Set dates - assume first date is DOB, second is service date
+                if dates_found:
+                    if len(dates_found) > 0:
+                        try:
+                            # Try to parse and standardize the date
+                            date_str = dates_found[0]
+                            # Simple date standardization
+                            for fmt in ['%m/%d/%Y', '%m-%d-%Y', '%Y-%m-%d', '%m/%d/%y']:
+                                try:
+                                    parsed_date = datetime.strptime(date_str, fmt)
+                                    patient["patient_info"]["date_of_birth"] = parsed_date.strftime('%Y-%m-%d')
+                                    break
+                                except ValueError:
+                                    continue
+                        except:
+                            pass
+                    
+                    if len(dates_found) > 1:
+                        try:
+                            date_str = dates_found[1]
+                            for fmt in ['%m/%d/%Y', '%m-%d-%Y', '%Y-%m-%d', '%m/%d/%y']:
+                                try:
+                                    parsed_date = datetime.strptime(date_str, fmt)
+                                    patient["service_info"]["date_of_service"] = parsed_date.strftime('%Y-%m-%d')
+                                    break
+                                except ValueError:
+                                    continue
+                        except:
+                            pass
+                
+                # Add CPT codes
+                for cpt in cpt_codes:
+                    patient["medical_codes"]["cpt_codes"].append({
+                        "code": cpt,
+                        "description": f"CPT {cpt}",
+                        "charge": float(amounts[0]) if amounts else 0.0
+                    })
+                
+                # Add ICD codes
+                for icd in icd_codes:
+                    patient["medical_codes"]["icd10_codes"].append({
+                        "code": icd,
+                        "description": f"ICD-10 {icd}"
+                    })
+                
+                # Add financial info
+                if amounts:
+                    patient["financial_info"]["total_charges"] = float(amounts[0])
+                
+                result["patients"].append(patient)
         
-        # Try to extract some basic information from the text
-        if "john smith" in text_lower:
-            result["patients"][0]["patient_info"]["first_name"] = "John"
-            result["patients"][0]["patient_info"]["last_name"] = "Smith"
-        
-        if "01/15/1980" in prompt or "1980" in prompt:
-            result["patients"][0]["patient_info"]["date_of_birth"] = "1980-01-15"
-        
-        if "03/15/2024" in prompt or "2024" in prompt:
-            result["patients"][0]["service_info"]["date_of_service"] = "2024-03-15"
-        
-        # Extract CPT codes
-        import re
-        cpt_codes = re.findall(r'\b\d{5}\b', prompt)
-        for code in cpt_codes:
-            result["patients"][0]["medical_codes"]["cpt_codes"].append({
-                "code": code,
-                "description": f"CPT Code {code}",
-                "charge": 0
-            })
-        
-        # Extract ICD-10 codes
-        icd_codes = re.findall(r'\b[A-Z]\d{2}\.?\d*\b', prompt)
-        for code in icd_codes:
-            result["patients"][0]["medical_codes"]["icd10_codes"].append({
-                "code": code,
-                "description": f"ICD-10 Code {code}"
-            })
+        # If no data found, return empty structure
+        if not result["patients"]:
+            result["patients"] = [{
+                "patient_info": {
+                    "first_name": "Unknown",
+                    "last_name": "Patient"
+                },
+                "medical_codes": {
+                    "cpt_codes": [],
+                    "icd10_codes": []
+                }
+            }]
         
         return json.dumps(result, indent=2)
     

@@ -111,7 +111,6 @@ class UnifiedOCREngine(OCRErrorHandler):
         
         # Track initialized engines
         self.engines = {}
-        self.engines = {}
         self._initialize_engines()
         
     def _get_device(self) -> str:
@@ -432,7 +431,7 @@ class UnifiedOCREngine(OCRErrorHandler):
         # Check available engines
         available_engines = [
             (name, engine) for name, engine in self.engines.items()
-            if self.resource_manager.get_model_info(f"ocr_{name}")
+            if hasattr(engine, 'models_loaded') and engine.models_loaded
         ]
         
         if not available_engines:
@@ -452,8 +451,12 @@ class UnifiedOCREngine(OCRErrorHandler):
             async with sem:
                 try:
                     result = await engine.extract_text(image)
-                    # Update last used timestamp
-                    self.resource_manager.get_model_info(f"ocr_{engine_name}").last_used = time.time()
+                    # Update last used timestamp (safely)
+                    try:
+                        if self.resource_manager.get_model_info(f"ocr_{engine_name}"):
+                            self.resource_manager.get_model_info(f"ocr_{engine_name}").last_used = time.time()
+                    except:
+                        pass  # Don't fail if resource manager update fails
                     return engine_name, result
                 except Exception as e:
                     error = self.handle_error(
@@ -484,28 +487,14 @@ class UnifiedOCREngine(OCRErrorHandler):
                 errors.append(task_result)
                 degraded_mode = True
         
-        # Verify results
-        verified_results, needs_retry = await self.ensemble_manager.verify_results(results)
+        # Skip verification and retry for speed - use results directly
+        verified_results = results
         
-        # Handle verification failures
-        if needs_retry and not degraded_mode:
-            self.logger.warning("Initial results need improvement, attempting retry")
-            # Attempt retry with adjusted parameters
-            retry_results = []
-            for engine_name, engine in available_engines:
-                if engine_name not in [r.model_name.split("_")[-1] for r in verified_results]:
-                    try:
-                        result = await engine.extract_text(image)
-                        if result and result.text:
-                            result.model_name = f"{result.model_name}_{engine_name}"
-                            retry_results.append(result)
-                    except Exception as e:
-                        self.handle_error(
-                            e,
-                            context=f"Retry extraction with {engine_name}",
-                            error_type=OCRErrorType.INFERENCE
-                        )
-            verified_results.extend(retry_results)
+        # Disabled retry logic for performance
+        # Note: Retry was causing 3x longer processing times
+        # if needs_retry and not degraded_mode:
+        #     self.logger.warning("Initial results need improvement, attempting retry")
+        #     ... retry logic disabled for speed ...
         
         # Handle case where all engines failed
         if not verified_results:

@@ -485,8 +485,21 @@ class DataExporter:
         """
         self.logger.info(f"Exporting {len(patients)} patients to {format_type}: {output_path}")
         
-        # Ensure output directory exists
-        Path(output_path).parent.mkdir(parents=True, exist_ok=True)
+        # Validate and secure output path
+        try:
+            output_path = Path(output_path).resolve()
+            
+            # Security: Ensure path is within allowed directory
+            allowed_base = Path.cwd().resolve()
+            output_path.relative_to(allowed_base)
+            
+            # Ensure output directory exists securely
+            output_path.parent.mkdir(parents=True, exist_ok=True, mode=0o755)
+            
+        except ValueError as e:
+            raise ValueError(f"Invalid output path - path traversal detected: {output_path}") from e
+        except Exception as e:
+            raise RuntimeError(f"Failed to create output directory: {e}") from e
         
         if format_type.lower() == 'csv':
             self.csv_exporter.export_patients(patients, output_path, **kwargs)

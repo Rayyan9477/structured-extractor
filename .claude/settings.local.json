@@ -4,7 +4,14 @@
       "Bash(pip install:*)",
       "Bash(streamlit run:*)",
       "Bash(python:*)",
-      "Bash(timeout:*)"
+      "Bash(timeout:*)",
+      "mcp__ide__getDiagnostics",
+      "Bash(grep:*)",
+      "Bash(rm:*)",
+      "Bash(del:*)",
+      "Bash(icacls:*)",
+      "Bash(find:*)",
+      "Bash(sed:*)"
     ],
     "deny": []
   }

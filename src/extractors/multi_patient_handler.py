@@ -422,8 +422,14 @@ class PatientBoundaryDetector:
                     'match_text': match.group(0)
                 })
         
-        # Sort by position
-        code_positions.sort(key=lambda x: x['start'])
+        # Sort by position with error handling
+        try:
+            code_positions.sort(key=lambda x: x.get('start', 0))
+        except (KeyError, TypeError) as e:
+            self.logger.warning(f"Error sorting code positions: {e}")
+            # Fallback: filter out invalid positions
+            code_positions = [pos for pos in code_positions if isinstance(pos.get('start'), (int, float))]
+            code_positions.sort(key=lambda x: x['start'])
         
         if len(code_positions) < 4:  # Need at least 4 codes to detect groupings
             return boundaries

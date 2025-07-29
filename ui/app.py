@@ -29,22 +29,40 @@ def initialize_engine():
         
         st.session_state.extraction_engine = ExtractionEngine(config)
         st.session_state.model_info = {
-            'ocr_model': 'Nanonets OCR (GPU Optimized)',
-            'extraction_model': 'NuExtract 2.0-8B',
-            'processing_strategy': 'Sequential Loading',
-            'gpu_acceleration': torch.cuda.is_available()
+            'ocr_model': 'Nanonets OCR-s (Local Model)',
+            'extraction_model': 'NuExtract 2.0-8B (Local Model)', 
+            'processing_strategy': 'Sequential GPU Loading',
+            'gpu_acceleration': torch.cuda.is_available(),
+            'models_source': 'Local Downloads'
         }
 
 
 def process_pdf(uploaded_file):
     """Process uploaded PDF file using optimized sequential processing."""
-    # Save uploaded file to temporary location
-    temp_dir = Path("temp")
-    temp_dir.mkdir(exist_ok=True)
-    temp_path = temp_dir / uploaded_file.name
+    # Security: Validate file name and create secure temporary location
+    import tempfile
+    import os
     
-    with open(temp_path, "wb") as f:
-        f.write(uploaded_file.getbuffer())
+    # Validate file extension
+    allowed_extensions = {'.pdf', '.png', '.jpg', '.jpeg', '.tiff', '.tif', '.bmp'}
+    file_ext = Path(uploaded_file.name).suffix.lower()
+    if file_ext not in allowed_extensions:
+        st.error(f"Unsupported file type: {file_ext}. Allowed: {', '.join(allowed_extensions)}")
+        return
+    
+    # Create secure temporary file with proper cleanup
+    try:
+        with tempfile.NamedTemporaryFile(
+            delete=False, 
+            suffix=file_ext,
+            prefix="superbill_",
+            dir=tempfile.gettempdir()
+        ) as temp_file:
+            temp_file.write(uploaded_file.getbuffer())
+            temp_path = Path(temp_file.name)
+    except Exception as e:
+        st.error(f"Failed to create temporary file: {e}")
+        return
     
     start_time = time.time()
     
@@ -52,13 +70,23 @@ def process_pdf(uploaded_file):
         # Show progress information
         with st.spinner("🚀 Initializing models sequentially for optimal performance..."):
             # Process file using the extraction engine with progress tracking
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-            
-            # Extract data using the optimized engine
-            extraction_result = loop.run_until_complete(
-                st.session_state.extraction_engine.extract_from_file(str(temp_path))
-            )
+            try:
+                # Check if there's an existing event loop
+                try:
+                    loop = asyncio.get_running_loop()
+                    # If we're in an async context, create a task
+                    extraction_result = asyncio.run_coroutine_threadsafe(
+                        st.session_state.extraction_engine.extract_from_file(str(temp_path)),
+                        loop
+                    ).result()
+                except RuntimeError:
+                    # No running loop, safe to use asyncio.run
+                    extraction_result = asyncio.run(
+                        st.session_state.extraction_engine.extract_from_file(str(temp_path))
+                    )
+            except Exception as async_error:
+                st.error(f"Async processing error: {async_error}")
+                return
         
         processing_time = time.time() - start_time
         
@@ -90,9 +118,13 @@ def process_pdf(uploaded_file):
             'metadata': {'error_type': type(e).__name__}
         }
     finally:
-        # Clean up
-        if temp_path.exists():
-            os.unlink(temp_path)
+        # Clean up temporary file
+        try:
+            if 'temp_path' in locals() and temp_path.exists():
+                os.unlink(temp_path)
+        except Exception as cleanup_error:
+            # Log cleanup error but don't fail the main operation
+            pass
 
 
 def display_extraction_results(result):
@@ -262,44 +294,113 @@ def main():
                 result = process_pdf(uploaded_file)
                 display_extraction_results(result)
                 
-                # Export options
+                # Enhanced Export options
                 if result['success']:
                     st.subheader("📤 Export Options")
-                    export_col1, export_col2 = st.columns(2)
+                    
+                    # Generate base filename from uploaded file
+                    base_name = uploaded_file.name.rsplit('.', 1)[0] if '.' in uploaded_file.name else uploaded_file.name
+                    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                    
+                    # Always show download buttons (no need to click first)
+                    export_col1, export_col2, export_col3 = st.columns(3)
                     
                     with export_col1:
-                        if st.button("📋 Download JSON"):
-                            json_data = json.dumps(result, indent=2, default=str)
-                            st.download_button(
-                                label="💾 Save JSON File",
-                                data=json_data,
-                                file_name=f"{uploaded_file.name}_extraction.json",
-                                mime="application/json"
-                            )
+                        # JSON Export
+                        json_data = json.dumps(result, indent=2, default=str)
+                        st.download_button(
+                            label="📋 Download JSON",
+                            data=json_data,
+                            file_name=f"{base_name}_extraction_{timestamp}.json",
+                            mime="application/json",
+                            help="Complete extraction data in JSON format",
+                            use_container_width=True
+                        )
                     
                     with export_col2:
-                        if st.button("📊 Download CSV"):
-                            # Create CSV data
-                            csv_data = []
-                            for i, patient in enumerate(result['extraction_result'].patients or []):
-                                for cpt in patient.cpt_codes or []:
-                                    csv_data.append({
-                                        'Patient': f"{patient.first_name or ''} {patient.last_name or ''}".strip(),
-                                        'Patient_ID': patient.patient_id or '',
-                                        'CPT_Code': cpt.code,
-                                        'CPT_Description': cpt.description or '',
-                                        'Charge': cpt.charge or 0
-                                    })
+                        # CSV Export - Patient Summary
+                        csv_data = []
+                        for i, patient in enumerate(result['extraction_result'].patients or []):
+                            row = {
+                                'Patient_Index': i + 1,
+                                'First_Name': patient.first_name or '',
+                                'Last_Name': patient.last_name or '',
+                                'Patient_ID': patient.patient_id or '',
+                                'Date_of_Birth': patient.date_of_birth or '',
+                                'Date_of_Service': patient.date_of_service or '',
+                                'Insurance_Provider': patient.insurance_provider or '',
+                                'CPT_Codes': ', '.join([cpt.code for cpt in patient.cpt_codes or []]),
+                                'ICD10_Codes': ', '.join([icd.code for icd in patient.icd10_codes or []]),
+                                'Total_Charges': patient.financial_info.total_charges if patient.financial_info else '',
+                                'Extraction_Confidence': f"{patient.extraction_confidence:.2f}" if hasattr(patient, 'extraction_confidence') else ''
+                            }
+                            csv_data.append(row)
+                        
+                        if csv_data:
+                            df = pd.DataFrame(csv_data)
+                            csv_string = df.to_csv(index=False)
+                            st.download_button(
+                                label="📊 Download CSV",
+                                data=csv_string,
+                                file_name=f"{base_name}_patients_{timestamp}.csv",
+                                mime="text/csv",
+                                help="Patient summary data in CSV format",
+                                use_container_width=True
+                            )
+                    
+                    with export_col3:
+                        # Detailed CPT/ICD Export
+                        detailed_data = []
+                        for i, patient in enumerate(result['extraction_result'].patients or []):
+                            patient_name = f"{patient.first_name or ''} {patient.last_name or ''}".strip()
                             
-                            if csv_data:
-                                df = pd.DataFrame(csv_data)
-                                csv_string = df.to_csv(index=False)
-                                st.download_button(
-                                    label="💾 Save CSV File",
-                                    data=csv_string,
-                                    file_name=f"{uploaded_file.name}_patients.csv",
-                                    mime="text/csv"
-                                )
+                            # Add CPT codes
+                            for cpt in patient.cpt_codes or []:
+                                detailed_data.append({
+                                    'Patient_Index': i + 1,
+                                    'Patient_Name': patient_name,
+                                    'Patient_ID': patient.patient_id or '',
+                                    'Code_Type': 'CPT',
+                                    'Code': cpt.code,
+                                    'Description': cpt.description or '',
+                                    'Charge': cpt.charge or 0,
+                                    'Date_of_Service': patient.date_of_service or ''
+                                })
+                            
+                            # Add ICD-10 codes
+                            for icd in patient.icd10_codes or []:
+                                detailed_data.append({
+                                    'Patient_Index': i + 1,
+                                    'Patient_Name': patient_name,
+                                    'Patient_ID': patient.patient_id or '',
+                                    'Code_Type': 'ICD-10',
+                                    'Code': icd.code,
+                                    'Description': icd.description or '',
+                                    'Charge': '',
+                                    'Date_of_Service': patient.date_of_service or ''
+                                })
+                        
+                        if detailed_data:
+                            df_detailed = pd.DataFrame(detailed_data)
+                            csv_detailed = df_detailed.to_csv(index=False)
+                            st.download_button(
+                                label="📋 Download Codes",
+                                data=csv_detailed,
+                                file_name=f"{base_name}_codes_{timestamp}.csv",
+                                mime="text/csv",
+                                help="Detailed CPT and ICD-10 codes in CSV format",
+                                use_container_width=True
+                            )
+                    
+                    # Summary statistics
+                    if result['extraction_result'].patients:
+                        patients_count = len(result['extraction_result'].patients)
+                        total_cpt = sum(len(p.cpt_codes or []) for p in result['extraction_result'].patients)
+                        total_icd = sum(len(p.icd10_codes or []) for p in result['extraction_result'].patients)
+                        
+                        st.info(f"📊 **Export Summary:** {patients_count} patients, {total_cpt} CPT codes, {total_icd} ICD-10 codes ready for download")
+                    else:
+                        st.warning("⚠️ No patient data available for export")
                 
                 # Show raw JSON for debugging
                 with st.expander("🔍 Raw Extraction Data (Advanced)"):
@@ -344,6 +445,14 @@ def main():
         st.write("✅ Patient differentiation")
         st.write("✅ Financial data extraction")
         st.write("✅ Service information")
+        st.write("✅ Local model processing")
+        st.write("✅ No API dependencies")
+        
+        # Model Information
+        st.markdown("### 📋 Local Models")
+        st.write("**OCR:** Nanonets-OCR-s")
+        st.write("**Extraction:** NuExtract-2.0-8B")
+        st.write("**Storage:** models/ directory")
         
         # Tips section
         st.markdown("### 💡 Tips")
@@ -353,17 +462,23 @@ def main():
         - Ensure text is readable
         - Multi-page documents supported
         - Processing time varies by complexity
+        - Models load sequentially to save memory
         """)
         
         # Version info
         st.markdown("---")
-        st.caption("🔧 **Version:** 2.0 | **Engine:** Sequential AI")
+        st.caption("🔧 **Version:** 2.0 | **Engine:** Local Sequential AI")
         
         # Performance note
         if torch.cuda.is_available():
-            st.success("🚀 **GPU acceleration active** for faster processing")
+            st.success("🚀 **GPU acceleration active** - Using local models for faster processing")
         else:
             st.warning("💻 **CPU mode** - Consider GPU for faster processing")
+
+
+def run_ui_app():
+    """Entry point for running the Streamlit UI application."""
+    main()
 
 
 if __name__ == "__main__":

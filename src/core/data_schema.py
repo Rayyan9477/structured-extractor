@@ -206,12 +206,14 @@ class PatientData:
 @dataclass
 class ServiceInfo:
     """Medical service information."""
-    cpt_codes: List[CPTCode] = field(default_factory=list)
-    icd10_codes: List[ICD10Code] = field(default_factory=list)
-    service_date: Optional[str] = None  # Use ISO format YYYY-MM-DD
-    total_charge: Optional[float] = None
+    date_of_service: Optional[str] = None  # Use ISO format YYYY-MM-DD
+    service_date: Optional[str] = None  # Use ISO format YYYY-MM-DD (legacy)
     provider_name: Optional[str] = None
+    provider_npi: Optional[str] = None
     facility_name: Optional[str] = None
+    place_of_service: Optional[str] = None
+    visit_type: Optional[str] = None
+    chief_complaint: Optional[str] = None
     confidences: Dict[str, FieldConfidence] = field(default_factory=dict)
 
 
@@ -259,6 +261,67 @@ class FinancialInfo:
     copay: Optional[float] = None
     deductible: Optional[float] = None
     confidences: Dict[str, FieldConfidence] = field(default_factory=dict)
+
+
+@dataclass
+class PatientData:
+    """Patient data extracted from medical documents."""
+    # Basic information
+    first_name: Optional[str] = None
+    last_name: Optional[str] = None
+    middle_name: Optional[str] = None
+    date_of_birth: Optional[str] = None  # ISO format YYYY-MM-DD
+    patient_id: Optional[str] = None
+    
+    # Contact information
+    phone: Optional[str] = None
+    email: Optional[str] = None
+    address: Optional[str] = None
+    
+    # Insurance information
+    insurance_provider: Optional[str] = None
+    insurance_id: Optional[str] = None
+    
+    # Medical codes
+    cpt_codes: List[CPTCode] = field(default_factory=list)
+    icd10_codes: List[ICD10Code] = field(default_factory=list)
+    
+    # Service and financial information
+    service_info: Optional[ServiceInfo] = None
+    financial_info: Optional[FinancialInfo] = None
+    
+    # Direct service date field (for backward compatibility)
+    date_of_service: Optional[str] = None  # ISO format YYYY-MM-DD
+    
+    # Metadata
+    extraction_confidence: float = 0.0
+    phi_detected: bool = False
+    patient_index: int = 0
+    page_number: Optional[int] = None
+    source_page_text: Optional[str] = None
+    
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert to dictionary for JSON serialization."""
+        return {
+            'first_name': self.first_name,
+            'last_name': self.last_name,
+            'middle_name': self.middle_name,
+            'date_of_birth': self.date_of_birth,
+            'patient_id': self.patient_id,
+            'phone': self.phone,
+            'email': self.email,
+            'address': self.address,
+            'insurance_provider': self.insurance_provider,
+            'insurance_id': self.insurance_id,
+            'cpt_codes': [{'code': c.code, 'description': c.description, 'charge': c.charge} for c in self.cpt_codes or []],
+            'icd10_codes': [{'code': c.code, 'description': c.description} for c in self.icd10_codes or []],
+            'service_info': self.service_info.__dict__ if self.service_info else None,
+            'financial_info': self.financial_info.__dict__ if self.financial_info else None,
+            'extraction_confidence': self.extraction_confidence,
+            'phi_detected': self.phi_detected,
+            'patient_index': self.patient_index,
+            'page_number': self.page_number
+        }
 
 
 @dataclass

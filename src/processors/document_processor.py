@@ -116,12 +116,24 @@ class ImagePreprocessor:
             
             if lines is not None:
                 angles = []
-                for rho, theta in lines[:20]:  # Use first 20 lines
-                    angle = theta * 180 / np.pi
-                    # Convert to rotation angle
-                    if angle > 90:
-                        angle = angle - 180
-                    angles.append(angle)
+                for line in lines[:20]:  # Use first 20 lines
+                    try:
+                        # Handle both single and multi-dimensional line formats
+                        if len(line) >= 2:
+                            rho, theta = line[0], line[1]
+                        elif len(line[0]) >= 2:
+                            rho, theta = line[0][0], line[0][1]
+                        else:
+                            continue  # Skip malformed lines
+                        
+                        angle = theta * 180 / np.pi
+                        # Convert to rotation angle
+                        if angle > 90:
+                            angle = angle - 180
+                        angles.append(angle)
+                    except (IndexError, ValueError) as e:
+                        # Skip lines that can't be unpacked properly
+                        continue
                 
                 # Find median angle
                 median_angle = np.median(angles)
@@ -474,26 +486,40 @@ class DocumentProcessor:
             # Convert PDF to images
             images = await self._pdf_to_images(pdf_path)
             
-            # Process each image
+            # Process each image with chunking for better OCR accuracy
             processed_images = []
             for i, image in enumerate(images):
-                self.logger.debug(f"Processing page {i + 1}")
+                self.logger.debug(f"Processing page {i + 1} with chunking")
                 
                 # Preprocess image
                 preprocessed = self.preprocessor.preprocess_image(image)
                 
-                # Segment page
+                # Chunk the page into smaller, manageable pieces
+                chunks = self.chunker.chunk_image(preprocessed)
+                self.logger.info(f"Page {i + 1} split into {len(chunks)} chunks for better OCR accuracy")
+                
+                # Segment page (for compatibility, but chunks are more important)
                 segments = self.segmenter.segment_page(preprocessed)
                 
-                # Store processed page data
+                # Store processed page data with chunks
                 page_data = {
                     'page_number': i + 1,
                     'image': preprocessed,
-                    'segments': segments,
+                    'chunks': chunks,  # Add chunks for better OCR processing
+                    'segments': segments,  # Keep for compatibility
                     'original_size': image.size,
-                    'processed_size': preprocessed.size
+                    'processed_size': preprocessed.size,
+                    'chunk_count': len(chunks),
+                    'processing_strategy': 'chunked' if len(chunks) > 1 else 'full_page'
                 }
                 processed_images.append(page_data)
+                
+                # Log chunk details
+                for j, chunk in enumerate(chunks):
+                    bbox = chunk['bbox']
+                    tokens = chunk['estimated_tokens']
+                    self.logger.debug(f"  Chunk {j+1}: bbox={bbox}, tokens={tokens}")
+            
             
             self.logger.info(f"Successfully processed {len(processed_images)} pages")
             return processed_images
@@ -617,7 +643,15 @@ class DocumentProcessor:
             List of processed images
         """
         self.logger.info(f"Processing document: {file_path}")
+        
+        # Validate input path
+        if not file_path:
+            raise ValueError("File path cannot be None or empty")
+        
         file_path = str(file_path)  # Ensure string path
+        
+        if not Path(file_path).exists():
+            raise FileNotFoundError(f"File not found: {file_path}")
         
         try:
             file_ext = Path(file_path).suffix.lower()
@@ -779,6 +813,46 @@ class DocumentProcessor:
             return 2
         else:
             return 1  # Very conservative for large documents
+    
+    def _calculate_adaptive_batch_size(self) -> int:
+        """
+        Calculate adaptive batch size based on available memory and document complexity.
+        
+        Returns:
+            Optimal batch size for processing
+        """
+        # Default conservative batch size
+        base_batch_size = 4
+        
+        # Adjust based on available memory (if we can detect it)
+        try:
+            import psutil
+            available_memory_gb = psutil.virtual_memory().available / (1024**3)
+            
+            if available_memory_gb < 4:
+                base_batch_size = 2
+            elif available_memory_gb < 8:
+                base_batch_size = 3
+            else:
+                base_batch_size = 4
+                
+        except ImportError:
+            # If psutil not available, use conservative default
+            base_batch_size = 3
+        
+        # Further adjust based on GPU availability
+        try:
+            import torch
+            if torch.cuda.is_available():
+                gpu_memory_gb = torch.cuda.get_device_properties(0).total_memory / (1024**3)
+                if gpu_memory_gb >= 12:
+                    base_batch_size = min(base_batch_size + 1, 5)
+                elif gpu_memory_gb < 8:
+                    base_batch_size = max(base_batch_size - 1, 2)
+        except:
+            pass
+        
+        return base_batch_size
     
     def _optimize_for_vlm(self, image: Image.Image, page_num: int, total_pages: int) -> Image.Image:
         """

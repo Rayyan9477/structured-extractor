@@ -169,3 +169,4 @@ extracted_*.csv
 
 *.safetensors
 *.cursor
+.claude

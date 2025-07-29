@@ -6,14 +6,14 @@ to provide a complete extraction pipeline for medical superbills.
 """
 
 import asyncio
-from typing import List, Dict, Any, Optional, Union
-from pathlib import Path
+import time
+from typing import List, Dict, Any, Optional
 import json
 from datetime import datetime
 
 from src.core.config_manager import ConfigManager
 from src.core.logger import get_logger
-from src.core.data_schema import PatientData, SuperbillDocument, ExtractionResults, FieldConfidence
+from src.core.data_schema import PatientData, ExtractionResults
 from src.processors.document_processor import DocumentProcessor
 from src.processors.ocr_engine import UnifiedOCREngine
 from src.extractors.field_detector import FieldDetectionEngine, DetectionResult
@@ -89,16 +89,23 @@ class ExtractionPipeline:
                 ocr_memory = torch.cuda.memory_allocated() / 1024**3
                 self.logger.info(f"✓ OCR model loaded - GPU memory: {ocr_memory:.2f}GB")
                 
-                # Memory optimization after OCR loading
+            # Memory optimization after OCR loading
+            try:
                 torch.cuda.empty_cache()
                 gc.collect()
+            except Exception as e:
+                self.logger.warning(f"Memory optimization warning: {e}")
             
             self.logger.info("✅ OCR model (Nanonets) loaded successfully")
             
-            # Brief pause to stabilize memory
-            await asyncio.sleep(2)
-            
-            # Phase 2: Load extraction model (NuExtract)
+            # Brief pause to stabilize memory and ensure CUDA operations are complete
+            try:
+                if torch.cuda.is_available():
+                    torch.cuda.synchronize()  # Ensure all CUDA operations are complete
+                await asyncio.sleep(2)
+            except Exception as e:
+                self.logger.warning(f"CUDA synchronization warning: {e}")
+                await asyncio.sleep(2)  # Still wait even if synchronization fails            # Phase 2: Load extraction model (NuExtract)
             self.logger.info("🧠 Phase 2: Loading NuExtract model...")
             await self.nuextract_engine.load_model()
             
@@ -126,10 +133,19 @@ class ExtractionPipeline:
         
         except Exception as e:
             self.logger.error(f"❌ Failed to initialize models sequentially: {e}")
-            # Clean up on failure
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
-                gc.collect()
+            # Clean up on failure with proper error handling
+            await self._safe_cleanup_resources()
+            # Clean up any partially loaded models
+            if hasattr(self, 'ocr_engine') and self.ocr_engine:
+                try:
+                    await self.ocr_engine.cleanup()
+                except Exception as cleanup_err:
+                    self.logger.warning(f"OCR engine cleanup failed: {cleanup_err}")
+            if hasattr(self, 'nuextract_engine') and self.nuextract_engine:
+                try:
+                    await self.nuextract_engine.cleanup()
+                except Exception as cleanup_err:
+                    self.logger.warning(f"NuExtract engine cleanup failed: {cleanup_err}")
             raise
 
     async def extract_from_file(self, file_path: str) -> ExtractionResults:
@@ -148,43 +164,78 @@ class ExtractionPipeline:
             # Ensure models are loaded
             await self._initialize_models()
             
-            # Step 1: Process document
-            images = await self.document_processor.process_document(file_path)
+            # Step 1: Process document with chunking
+            processed_pages = await self.document_processor.process_pdf(file_path)
             
-            if not images:
-                raise ValueError("No images could be extracted from the document")
+            if not processed_pages:
+                raise ValueError("No pages could be processed from the document")
             
-            # Step 2: Extract text using OCR (Nanonets only - no fallbacks)
-            ocr_results = []
-            for img in images:
-                result = await self.ocr_engine.extract_text(img)
-                ocr_results.append(result)
-            
-            # Validate OCR results
-            if not any(r.text.strip() for r in ocr_results):
-                self.logger.error("No text extracted by OCR")
-                raise ValueError("OCR failed to extract any text from the document")
-            
-            # Step 3: Process each page independently
+            # Step 2: Extract text using chunk-based OCR for better accuracy
             all_patients = []
+            total_chunks = sum(page['chunk_count'] for page in processed_pages)
+            self.logger.info(f"Processing {len(processed_pages)} pages with {total_chunks} total chunks")
             
-            # Process each page individually
-            for page_idx, ocr_result in enumerate(ocr_results):
-                self.logger.info(f"Processing page {page_idx+1}/{len(ocr_results)}")
+            # Process each page and its chunks
+            for page_idx, page_data in enumerate(processed_pages):
+                page_num = page_data['page_number']
+                chunks = page_data['chunks']
+                strategy = page_data['processing_strategy']
                 
-                # Extract patients from this page
-                page_patients = await self._extract_patient_data(
-                    ocr_result.text, 
-                    page_number=page_idx+1,
-                    total_pages=len(ocr_results)
-                )
+                self.logger.info(f"Processing page {page_num} using {strategy} strategy with {len(chunks)} chunks")
                 
-                # Add page metadata to each patient
-                for patient in page_patients:
-                    patient.page_number = page_idx + 1
-                    patient.source_page_text = ocr_result.text[:500]  # Store truncated source text for debugging
+                # Extract text from each chunk for better OCR accuracy
+                chunk_texts = []
+                for chunk_idx, chunk in enumerate(chunks):
+                    self.logger.debug(f"Processing chunk {chunk_idx+1}/{len(chunks)} on page {page_num}")
+                    
+                    # Extract text from this chunk
+                    chunk_ocr_result = await self.ocr_engine.extract_text(chunk['image'])
+                    
+                    if chunk_ocr_result.text.strip():
+                        chunk_texts.append({
+                            'text': chunk_ocr_result.text,
+                            'bbox': chunk['bbox'],
+                            'confidence': chunk_ocr_result.confidence,
+                            'chunk_index': chunk_idx,
+                            'estimated_tokens': chunk['estimated_tokens']
+                        })
+                        self.logger.debug(f"  Chunk {chunk_idx+1}: extracted {len(chunk_ocr_result.text)} chars, confidence: {chunk_ocr_result.confidence:.2f}")
+                    else:
+                        self.logger.warning(f"  Chunk {chunk_idx+1}: no text extracted")
                 
-                all_patients.extend(page_patients)
+                # Combine chunk texts intelligently
+                if chunk_texts:
+                    # Sort chunks by position (top-to-bottom, left-to-right)
+                    chunk_texts.sort(key=lambda c: (c['bbox'][1], c['bbox'][0]))  # Sort by Y then X
+                    
+                    # Combine texts with spatial awareness
+                    combined_text = self._combine_chunk_texts(chunk_texts)
+                    
+                    self.logger.info(f"Page {page_num}: combined {len(chunk_texts)} chunks into {len(combined_text)} characters")
+                    
+                    # Extract patients from the combined page text
+                    page_patients = await self._extract_patient_data(
+                        combined_text, 
+                        page_number=page_num,
+                        total_pages=len(processed_pages)
+                    )
+                    
+                    # Add enhanced metadata to each patient
+                    for patient in page_patients:
+                        patient.page_number = page_num
+                        patient.source_page_text = combined_text[:500]  # Store truncated source text
+                        patient.chunk_count = len(chunks)
+                        patient.processing_strategy = strategy
+                    
+                    all_patients.extend(page_patients)
+                    self.logger.info(f"Page {page_num}: extracted {len(page_patients)} patients")
+                else:
+                    self.logger.warning(f"Page {page_num}: no text extracted from any chunks")
+            
+            # Validate that we got some text
+            if not all_patients and total_chunks > 0:
+                self.logger.error("No patients extracted despite having processed chunks")
+                # This could indicate an issue with the extraction logic
             
             # Deduplicate patients across pages
             patients = await self._deduplicate_patients_across_pages(all_patients)
@@ -565,6 +616,8 @@ class ExtractionPipeline:
                         if date_type == "date_of_birth":
                             patient_data.date_of_birth = std_date
                         elif date_type == "date_of_service":
+                            # Set both the direct field and service_info field
+                            patient_data.date_of_service = std_date
                             if not patient_data.service_info:
                                 patient_data.service_info = ServiceInfo()
                             patient_data.service_info.date_of_service = std_date
@@ -573,10 +626,11 @@ class ExtractionPipeline:
                     if date_values and not patient_data.date_of_birth:
                         patient_data.date_of_birth = date_values[0]
                         
-                        if len(date_values) > 1 and not (patient_data.service_info and patient_data.service_info.date_of_service):
-                            patient_data.service_info = ServiceInfo(
-                                date_of_service=date_values[1]
-                            )
+                        if len(date_values) > 1 and not patient_data.date_of_service:
+                            patient_data.date_of_service = date_values[1]
+                            if not patient_data.service_info:
+                                patient_data.service_info = ServiceInfo()
+                            patient_data.service_info.date_of_service = date_values[1]
             
             # Set financial information
             if 'amounts' in field_results and field_results['amounts']:
@@ -724,13 +778,16 @@ class ExtractionPipeline:
         Returns:
             Similarity score (0.0 to 1.0)
         """
+        if not patient1 or not patient2:
+            return 0.0
+            
         similarities = []
         
         # Name similarity
-        if patient1.first_name and patient2.first_name:
+        if hasattr(patient1, 'first_name') and hasattr(patient2, 'first_name') and patient1.first_name and patient2.first_name:
             name_sim = self._calculate_string_similarity(patient1.first_name, patient2.first_name)
             similarities.append(name_sim * 0.25)  # 25% weight
-            
+        
         if patient1.last_name and patient2.last_name:
             name_sim = self._calculate_string_similarity(patient1.last_name, patient2.last_name)
             similarities.append(name_sim * 0.25)  # 25% weight
@@ -841,10 +898,11 @@ class ExtractionPipeline:
     def _merge_non_empty_fields(self, target: PatientData, source: PatientData) -> None:
         """Copy all non-empty fields from source to target."""
         # Skip special fields and lists
-        skip_fields = ['page_number', 'source_pages', 'source_page_text', 
-                       'cpt_codes', 'icd10_codes', 'validation_errors']
+        skip_fields = {'page_number', 'source_pages', 'source_page_text', 
+                      'cpt_codes', 'icd10_codes', 'validation_errors'}
         
-        for attr in dir(source):
+        # Create a copy of attributes to iterate over to avoid dictionary mutation issues
+        for attr in list(dir(source)):
             if attr.startswith('_') or callable(getattr(source, attr)) or attr in skip_fields:
                 continue
                 
@@ -868,6 +926,54 @@ class ExtractionPipeline:
             if not target_value and source_value:
                 setattr(target, attr, source_value)
     
+    def _combine_chunk_texts(self, chunk_texts: List[Dict[str, Any]]) -> str:
+        """
+        Intelligently combine text from multiple chunks with spatial awareness.
+        
+        Args:
+            chunk_texts: List of chunk text data with bbox information
+            
+        Returns:
+            Combined text string
+        """
+        if not chunk_texts:
+            return ""
+        
+        if len(chunk_texts) == 1:
+            return chunk_texts[0]['text']
+        
+        # Sort chunks by position (already done before calling this method)
+        combined_lines = []
+        
+        for i, chunk in enumerate(chunk_texts):
+            text = chunk['text'].strip()
+            if not text:
+                continue
+                
+            # Add chunk boundary markers for debugging (optional)
+            if self.logger.level <= 10:  # DEBUG level
+                combined_lines.append(f"[CHUNK {chunk['chunk_index']+1}]")
+            
+            # Split text into lines and add them
+            lines = text.split('\n')
+            for line in lines:
+                line = line.strip()
+                if line:
+                    combined_lines.append(line)
+            
+            # Add spacing between chunks if they're not adjacent
+            if i < len(chunk_texts) - 1:
+                next_chunk = chunk_texts[i + 1]
+                current_bbox = chunk['bbox']
+                next_bbox = next_chunk['bbox']
+                
+                # Check if chunks are vertically separated (different rows)
+                vertical_gap = next_bbox[1] - (current_bbox[1] + current_bbox[3])
+                if vertical_gap > 20:  # Significant vertical gap
+                    combined_lines.append("")  # Add blank line
+        
+        return '\n'.join(combined_lines)
+
     def _merge_list_fields(self, target: PatientData, source: PatientData) -> None:
         """Merge list fields like CPT codes and ICD codes."""
         # Handle CPT codes
@@ -902,6 +1008,35 @@ class ExtractionEngine:
     This is the main class that users will interact with for extracting
     structured data from medical superbills.
     """
+    
+    async def _safe_cleanup_resources(self):
+        """Safely clean up GPU and system resources with comprehensive error handling."""
+        cleanup_tasks = []
+        
+        # GPU memory cleanup
+        if torch.cuda.is_available():
+            try:
+                torch.cuda.empty_cache()
+                self.logger.debug("GPU cache cleared")
+            except Exception as e:
+                self.logger.warning(f"GPU cache cleanup failed: {e}")
+        
+        # System memory cleanup
+        try:
+            import gc
+            collected = gc.collect()
+            self.logger.debug(f"Garbage collection freed {collected} objects")
+        except Exception as e:
+            self.logger.warning(f"Garbage collection failed: {e}")
+        
+        # Additional CUDA cleanup if available
+        try:
+            if torch.cuda.is_available():
+                torch.cuda.synchronize()
+                # Force memory defragmentation
+                torch.cuda.empty_cache()
+        except Exception as e:
+            self.logger.warning(f"CUDA synchronization failed: {e}")
     
     def __init__(self, config: Optional[ConfigManager] = None, config_path: Optional[str] = None):
         """
