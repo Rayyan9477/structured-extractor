@@ -36,7 +36,7 @@ Structured Output
 ## 📦 Installation
 
 ### Prerequisites
-- Python 3.8+
+- Python 
 - CUDA-compatible GPU (recommended)
 - 8GB+ RAM (16GB+ recommended for GPU acceleration)
 
